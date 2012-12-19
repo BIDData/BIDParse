@@ -1,0 +1,22 @@
+CC=icl
+NVCC=nvcc
+NVCCFLAGS=-c -arch sm_30 --machine 64 -Xcompiler "/EHsc /W3 /nologo /O2 /Zi  /MT"
+OBJ=obj
+OUTFLG=/OUT:
+CPPFLAGS=
+CFLAGS=/c /MT /DNDEBUG /O2 /Qstd=c99 
+LB=lib
+LD=link
+LDFLAGS=/DLL /MACHINE:AMD64 
+LIBPREPEND=
+LIBAPPEND=.dll
+LAPACK_INCLUDES=
+MKL_LIBS=mkl_intel_lp64.lib mkl_intel_thread.lib mkl_core.lib libiomp5md.lib
+CUDA_LIBS=cudart.lib CommonJNI.lib
+FORTRAN_LIBS=
+FC=ifort
+FFLAGS=-c 
+LIB=c:/Intel/MKL/mkl/lib/intel64;c:/Intel/MKL/compiler/lib/intel64;C:/Progra~1/Java/jdk1.6.0_29/lib;C:/Progra~1/NVIDIA~2/CUDA/v4.2/lib/x64;/code/JCUDA/lib/Release;C:\Program Files (x86)\Intel\Composer XE\compiler\lib;C:\Program Files (x86)\Intel\Composer XE\compiler\lib\intel64;C:\Program Files (x86)\Microsoft Visual Studio 9.0\VC\ATLMFC\LIB\amd64;C:\Program Files (x86)\Microsoft Visual Studio 9.0\VC\LIB\amd64;C:\Program Files\\Microsoft SDKs\Windows\v6.0A\lib\x64;
+INCLUDE=C:/Progra~1/Java/jdk1.6.0_29/include;C:/Progra~1/Java/jdk1.6.0_29/include/win32;c:/Intel/MKL/mkl/include;c:/code/Parser/jni/src;c:/code/Parser/jni/src/rules;/code/JCUDA/CommonJNI/src;C:/Progra~1/NVIDIA~2/CUDA/v4.2/include;C:\Program Files (x86)\Intel\Composer XE\compiler\include;C:\Program Files (x86)\Intel\Composer XE\compiler\include\intel64;C:\Program Files (x86)\Microsoft Visual Studio 9.0\VC\ATLMFC\INCLUDE;C:\Program Files (x86)\Microsoft Visual Studio 9.0\VC\INCLUDE;C:\Program Files\\Microsoft SDKs\Windows\v6.0A\include;
+JCUDA_COMMON=/code/JCUDA/CommonJNI/src
+JLAPACK_JNI_CP=../netlib-java-0.9.3.jar;../lib/f2j/arpack-combo-0.1.jar

@@ -3,7 +3,7 @@ import BIDMat.MatFunctions._
 import BIDMat.SciFunctions._
 import BIDMat.Solvers._
 import BIDMat.Plotting._
-import BIDParse._
+// import BIDParse._
 
 {
 var a = new Array[Int](1)
