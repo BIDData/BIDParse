@@ -23,13 +23,16 @@ import io.Source
 
 
 class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes:Int, val maxtrees:Int, 
-		            val maxlen:Int, val stride:Int, val nthreads:Int, leveldiff:Float, val cdict:CSMat) {
+		            val maxlen:Int, val stride:Int, val nthreads:Int, val cdict:CSMat) {
 
-  val docheck = false
+  val docheck = true
+  val doGPU = true
+  val usemaxsum = true
   val nnsyms = 32 * ((nnsyms0+31) / 32)
   val ntsyms = 32 * ((ntsyms0+31) / 32)
 
-  val minval = -1e8f
+  val minval = if (usemaxsum) -1e8f else 0f
+  val floatmin = 1e-40f
   // Storage for input words and score trees
   val fwordsb4     = FMat(ntsyms, maxwords)            // Accumulate terminal scores here
   val wordsb4      = GMat(ntsyms, maxwords)            // Buffer in GPU memory for terminal scores
@@ -43,12 +46,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   val rwordsafter  = if (docheck) FMat(ntsyms, maxwords) else null // For reference calculations
   val rtreesb4     = if (docheck) FMat(nnsyms, maxnodes) else null
   val rtreesafter  = if (docheck) FMat(nnsyms, maxnodes) else null
-  
-  var nnunary:GMat = null                              // Unary rule matrix (dense), non-terminal to non-terminal
-  var nnunaryx:GMat = null                             // Unary rule matrix (dense), non-terminal to non-terminal
-  var ntunary:GMat = null                              // Unary rule matrix (dense), non-terminal to terminal
-  var ttunary:GMat = null                              // Unary rule matrix (dense), terminal to terminal
-  
+    
   var nndarr:IMat = null
   var nnval:FMat = null
   var ntdarr:IMat = null
@@ -58,17 +56,21 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   var ttdarr:IMat = null
   var ttval:FMat = null
   
-  var unndarr:IMat = null
-  var unnval:FMat = null
-  var untdarr:IMat = null
-  var untval:FMat = null
-  var uttdarr:IMat = null
-  var uttval:FMat = null
+  var nnuarr:IMat = null
+  var nnuval:FMat = null
+  var ntuarr:IMat = null
+  var ntuval:FMat = null
+  var ttuarr:IMat = null
+  var ttuval:FMat = null
+  
+  var allmap:CSMat = null
+  var nmap:CSMat = null
+  var tmap:CSMat = null
   
   // Buffers (transposed relative to tree store) for binary rule application
   val leftbuff     = GMat(stride, ntsyms)              // Left score buffer       
   val rightbuff    = GMat(stride, ntsyms)              // Right score buffer 
-  val parbuff    = GMat(stride, nnsyms)              // Parent score buffer 
+  val parbuff      = GMat(stride, ntsyms)              // Parent score buffer 
  
   // Arrays of indices to and from word and tree storage for copies into the above buffers 
   val itreeptr     = IMat(maxtrees,1)
@@ -100,17 +102,32 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 
 	  // Process a block of data. Copy and transpose from tree storage, run kernels, copy back
 	  def doblock(level:Int) = {
-		  JCuda.cudaMemcpy(parptrs.data, iparpt, ndo*Sizeof.INT, cudaMemcpyHostToDevice)             // Copy IMat data to GIMats
-	    JCuda.cudaMemcpy(leftptrs.data, ileftpt, ndo*Sizeof.INT, cudaMemcpyHostToDevice)
-	    pcopytxin(parptrs.data, parr.data, parbuff.data, stride, parr.nrows, ndo)                  // Do the data copy/transpose
-	    pcopytxin(leftptrs.data, leftarr.data, leftbuff.data, stride, leftarr.nrows, ndo)    
+		  var err = JCuda.cudaMemcpy(parptrs.data, iparpt, ndo*Sizeof.INT, cudaMemcpyHostToDevice)             // Copy IMat data to GIMats
+	    if (err != 0) throw new RuntimeException("CUDA error in doblock:cudaMemcpy1")
+		  
+		  err = JCuda.cudaMemcpy(leftptrs.data, ileftpt, ndo*Sizeof.INT, cudaMemcpyHostToDevice)
+		  if (err != 0) throw new RuntimeException("CUDA error in doblock:cudaMemcpy2")
+		  
+	    err = pcopytxin(parptrs.data, parr.data, parbuff.data, stride, parr.nrows, ndo)        // Do the data copy/transpose
+	    if (err != 0) throw new RuntimeException("CUDA error in doblock:pcopytxin1")
+		  
+	    err = pcopytxin(leftptrs.data, leftarr.data, leftbuff.data, stride, leftarr.nrows, ndo) 
+	    if (err != 0) throw new RuntimeException("CUDA error in doblock:pcopytxin2")
+		  
 	    if (rightarr != null) {
-	      JCuda.cudaMemcpy(rightptrs.data, irightpt, ndo*Sizeof.INT, cudaMemcpyHostToDevice)	
-	      pcopytxin(rightptrs.data, rightarr.data, rightbuff.data, stride, rightarr.nrows, ndo)
+	      err = JCuda.cudaMemcpy(rightptrs.data, irightpt, ndo*Sizeof.INT, cudaMemcpyHostToDevice)	
+	      if (err != 0) throw new RuntimeException("CUDA error in doblock:cudaMemcpy3")
+	      
+	      err = pcopytxin(rightptrs.data, rightarr.data, rightbuff.data, stride, rightarr.nrows, ndo)
+	      if (err != 0) throw new RuntimeException("CUDA error in doblock:pcopytxin3")
 	    }    
-	    fctn(parbuff.data, leftbuff.data, rightbuff.data, null, ndo, nthreads)                     // Apply binary rules
+	    err = fctn(parbuff.data, leftbuff.data, rightbuff.data, null, ndo, nthreads)                     // Apply binary rules
+	    if (err != 0) throw new RuntimeException("CUDA error in doblock:kernel")
+
+	    err = pcopytxout(parptrs.data, parbuff.data, parr.data, stride, parr.nrows, ndo)                 // Copy/transpose data out
+	    if (err != 0) throw new RuntimeException("CUDA error in doblock:pcopytxout")
+	    
 	    Mat.nflops += 3L * ndo * nrules
-	    pcopytxout(parptrs.data, parbuff.data, parr.data, stride, parr.nrows, ndo)                 // Copy/transpose data out
 	    ndo = 0
 	  }
 	  
@@ -157,10 +174,16 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 	  unnState.ndo = 0
 	  untState.ndo = 0
 	  uttState.ndo = 0
+	  fwordsb4.set(minval)
 	  wordsb4.set(minval)
 	  wordsafter.set(minval)
 	  treesb4.set(minval)
 	  treesafter.set(minval)
+	  if (docheck) {
+	    rwordsafter.set(minval)
+	    rtreesb4.set(minval)
+	    rtreesafter.set(minval)
+	  }
   }
 
   // columns are words, rows are symbols
@@ -174,7 +197,11 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
     nnodes = nnodes + newnodes
     itreeptr(ntrees,0) = nnodes
     maxheight = math.max(maxheight, len)
-    fwordsb4(0->size(syms,1), (nwords-len)->nwords) = syms
+    if (usemaxsum) {
+    	fwordsb4(0->size(syms,1), (nwords-len)->nwords) = ln(max(floatmin, syms))
+    } else {
+    	fwordsb4(0->size(syms,1), (nwords-len)->nwords) = syms
+    }
   }
   
   // Map the x,y coordinates of a tree node to a linear index for that tree
@@ -207,6 +234,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 	    	        rtreesafter(nndarr(i,1), ltree) + rtreesafter(nndarr(i,2), rtree) + nnval(i,0))   	    
 	    	    i += 1
 	    	  }
+	    	  Mat.nflops += 3L*size(nndarr,1)
 	    	  if (y == level-1) {             // Do NT rules if y at max level
 	    	  	i = 0
 	    	  	while (i < size(ntdarr,1)) {
@@ -214,6 +242,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 	    	  		    rtreesafter(ntdarr(i,1), ltree) + rwordsafter(ntdarr(i,2), rword) + ntval(i,0))  	    
 	    	  		i += 1
 	    	  	}
+	    	  	Mat.nflops += 3L*size(ntdarr,1)
 	    	  }
 	    	  if (y == 0) {                   // Do TN rules if y == 0
 	    	  	i = 0
@@ -222,6 +251,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 	    	  		    rwordsafter(tndarr(i,1), lword) + rtreesafter(tndarr(i,2), rtree) + tnval(i,0))  	    
 	    	  		i += 1
 	    	  	}
+	    	  	Mat.nflops += 3L*size(tndarr,1)
 	    	  }
 	    	  if (level == 1) {               // Do TT rules if at level 1
 	    	  	i = 0
@@ -230,6 +260,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 	    	  		    rwordsafter(ttdarr(i,1), lword) + rwordsafter(ttdarr(i,2), rword) + ttval(i,0))  	    
 	    	  		i += 1
 	    	  	}
+	    	  	Mat.nflops += 3L*size(ttdarr,1)
 	    	  }
 	    	  y += 1
 	    	}
@@ -249,23 +280,26 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
     	while (x < sentlen - level) {
     		var i = 0
     		if (level == 0) {
-    			while (i < size(uttdarr,1)) {
-    				rwordsafter(uttdarr(i,0), pword+x) = math.max(rwordsafter(uttdarr(i,0), pword+x), 
-    						fwordsb4(uttdarr(i,1), pword+x) + uttval(i,0))
+    			while (i < size(ttuarr,1)) {
+    				rwordsafter(ttuarr(i,0), pword+x) = math.max(rwordsafter(ttuarr(i,0), pword+x), 
+    						fwordsb4(ttuarr(i,1), pword+x) + ttuval(i,0))
     				i += 1
     			}
+    		  Mat.nflops += 3L*size(ttuarr,1)
     			i = 0
-    			while (i < size(untdarr,1)) {
-    				rtreesafter(untdarr(i,0), ptree+x) = math.max(rtreesafter(untdarr(i,0), ptree+x), 
-    						fwordsb4(untdarr(i,1), pword+x) + untval(i,0))
+    			while (i < size(ntuarr,1)) {
+    				rtreesafter(ntuarr(i,0), ptree+x) = math.max(rtreesafter(ntuarr(i,0), ptree+x), 
+    						fwordsb4(ntuarr(i,1), pword+x) + ntuval(i,0))
     				i += 1
     			}
+    		  Mat.nflops += 3L*size(ntuarr,1)
     		} else {
-    			while (i < size(unndarr,1)) {
-    				rtreesafter(unndarr(i,0), ptree+x) = math.max(rtreesafter(unndarr(i,0), ptree+x), 
-    						rtreesb4(unndarr(i,1), ptree+x) + unnval(i,0))
+    			while (i < size(nnuarr,1)) {
+    				rtreesafter(nnuarr(i,0), ptree+x) = math.max(rtreesafter(nnuarr(i,0), ptree+x), 
+    						rtreesb4(nnuarr(i,1), ptree+x) + nnuval(i,0))
     				i += 1
     			}
+    			Mat.nflops += 3L*size(nnuarr,1)
     		}
     		x += 1
     	}
@@ -280,28 +314,26 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
     val ntsyms = 32*((ntsyms0+31)/32)
     val nnrange = (0->nnsyms0)
     val ntrange = ((nnsyms0-3)->(nnsyms0+ntsyms0-3))
-    val fmodel = FMat(ln(max(load(fname+"umodel.mat", "umodel").asInstanceOf[DMat], math.exp(minval)))) 
-    val fnn = minval*ones(nnsyms, nnsyms)
-    fnn(nnrange, nnrange) = fmodel(nnrange, nnrange)
-    nnunary = GMat(fnn)
-    val fnnx = minval*ones(ntsyms, ntsyms)
-    fnnx(nnrange, nnrange) = fmodel(nnrange, nnrange) 
-    nnunaryx = GMat(fnnx)
-    val fnt = minval*ones(nnsyms, ntsyms)
-    fnt(nnrange, 0->ntsyms0) = fmodel(nnrange, ntrange)
-    ntunary = GMat(fnt)
-    val ftt = minval*ones(ntsyms, ntsyms)
-    ftt(0->ntsyms0, 0->ntsyms0) = fmodel(ntrange, ntrange)
-    ttunary = GMat(ftt)
     
     nndarr = load(fname+"dmodel.mat", "nndarr")
-    nnval = FMat(ln(load(fname+"dmodel.mat", "nnval").asInstanceOf[DMat]))
+    nnval = load(fname+"dmodel.mat", "nnval")
     ntdarr = load(fname+"dmodel.mat", "ntdarr")
-    ntval = FMat(ln(load(fname+"dmodel.mat", "ntval").asInstanceOf[DMat]))
+    ntval = load(fname+"dmodel.mat", "ntval")
     tndarr = load(fname+"dmodel.mat", "tndarr")
-    tnval = FMat(ln(load(fname+"dmodel.mat", "tnval").asInstanceOf[DMat]))
+    tnval = load(fname+"dmodel.mat", "tnval")
     ttdarr = load(fname+"dmodel.mat", "ttdarr")
-    ttval = FMat(ln(load(fname+"dmodel.mat", "ttval").asInstanceOf[DMat]))
+    ttval = load(fname+"dmodel.mat", "ttval")
+    
+    allmap = load(fname+"dmodel.mat", "allmap")
+    nmap = allmap(0->nnsyms0,0)
+    tmap = allmap((nnsyms0-3)->(nnsyms0+ntsyms0-3),0)
+    
+    nnuarr = load(fname+"umodel.mat", "nnuarr")
+    nnuval = load(fname+"umodel.mat", "nnuval")
+    ntuarr = load(fname+"umodel.mat", "ntuarr")
+    ntuval = load(fname+"umodel.mat", "ntuval")
+    ttuarr = load(fname+"umodel.mat", "ttuarr")
+    ttuval = load(fname+"umodel.mat", "ttuval")
 
   }
   
@@ -310,71 +342,75 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   def innerscores() {
   	print("level 0")
   	var itree = 0
-  	while (itree < ntrees) {                              // Process unary rules on input words
-  		var sentlen = iwordptr(itree+1)-iwordptr(itree)
-  	  var x = 0;
-  		while (x < sentlen) {
-  			uttState.update(itree, x, 0, 0, sentlen)
-  			untState.update(itree, x, 0, 0, sentlen)
-  			x += 1
+  	if (doGPU) {
+  		while (itree < ntrees) {                               // Process unary rules on input words
+  			var sentlen = iwordptr(itree+1)-iwordptr(itree)
+  			var x = 0;
+  			while (x < sentlen) {
+  				uttState.update(itree, x, 0, 0, sentlen)
+  				untState.update(itree, x, 0, 0, sentlen)
+  				x += 1
+  			}
+  			itree += 1
   		}
-  		itree += 1
+  		wordsb4 <-- fwordsb4
+  		if (untState.ndo > 0) {untState.doblock(0)}            // Finish pending work on input words
+  		if (uttState.ndo > 0) {uttState.doblock(0)}
   	}
-  	if (untState.ndo > 0) {untState.doblock(0)}            // Finish pending work
-  	if (uttState.ndo > 0) {uttState.doblock(0)}
-  	if (docheck) chkUnary(0)                               // Run check of unary rules on input words
+  	if (docheck) chkUnary(0)                                 // Run check of unary rules on input words
   	var level = 1
-  	print("level 1")
-  	while (level < maxheight) {                            // Process this level 
-  	  var itree = 0
-  	  while (itree < ntrees) {                             // Binary rules first
-  	    var sentlen = iwordptr(itree+1)-iwordptr(itree)
-  	    var x = 0;
-  	    while (x < sentlen - level) {                      // Process each node at this level
-  	      var y = 0
-  	      while (y < level) {                              // All splits of the current span
-  	      	if (level == 1) {
-  	      	  ttState.update(itree, x, y, level, sentlen)  // Two terminals at level 1 only
-  	      	} 
-  	      	if (y == 0) {                                  // Left symbol is a terminal
-  	      	  tnState.update(itree, x, y, level, sentlen)
-  	      	} 
-  	      	if (y == level-1) {                            // Right symbol is a terminal
-   	      	  ntState.update(itree, x, y, level, sentlen)
-  	      	} 
-  	      	nnState.update(itree, x, y, level, sentlen)    // Always do two non-terminals 
-  	        y = y +1
-  	      }    	      
-  	      x = x + 1
-  	    }  	    
-  	    itree = itree+1
-  	  } 
-  	  if (ttState.ndo > 0) {ttState.doblock(level)}       // Almost done with this level, so flush (run rules on) any queued data
-  	  if (tnState.ndo > 0) {tnState.doblock(level)}
-  	  if (ntState.ndo > 0) {ntState.doblock(level)}
-  	  if (nnState.ndo > 0) {nnState.doblock(level)}
-  	  itree = 0
-  	  while (itree < ntrees) {                             // Now run unary rules at this level
-  	    var sentlen = iwordptr(itree+1)-iwordptr(itree)
-  	    var x = 0;
-  	    while (x < sentlen - level) {
-  	      unnState.update(itree, x, level, level, sentlen) 	      
-  	      x += 1
-  	    }
-  	    itree += 1
+//  	maxheight = 1
+  	while (level <= maxheight) {                             // Process this level 
+  	  if (doGPU) {
+  	  	itree = 0
+  	  	while (itree < ntrees) {                             // Binary rules first
+  	  		var sentlen = iwordptr(itree+1)-iwordptr(itree)
+  	  		var x = 0;
+  	  		while (x < sentlen - level) {                      // Process each node at this level
+  	  			var y = 0
+  	  			while (y < level) {                              // All splits of the current span
+  	  				if (level == 1) {
+  	  					ttState.update(itree, x, y, level, sentlen)  // Process two terminal symbols (level 1 only)
+  	  				} 
+  	  				if (y == 0) {                                  // Left symbol is a terminal
+  	  					tnState.update(itree, x, y, level, sentlen)
+  	  				} 
+  	  				if (y == level-1) {                            // Right symbol is a terminal
+  	  					ntState.update(itree, x, y, level, sentlen)
+  	  				} 
+  	  				nnState.update(itree, x, y, level, sentlen)    // Always do two non-terminals 
+  	  				y = y +1
+  	  			}    	      
+  	  			x = x + 1
+  	  		}  	    
+  	  		itree = itree+1
+  	  	} 
+  	  	if (ttState.ndo > 0) {ttState.doblock(level)}        // Almost done with this level, so finish any queued data
+  	  	if (tnState.ndo > 0) {tnState.doblock(level)}
+  	  	if (ntState.ndo > 0) {ntState.doblock(level)}
+  	  	if (nnState.ndo > 0) {nnState.doblock(level)}
+  	  	itree = 0
+  	  	while (itree < ntrees) {                             // Now run unary rules at this level
+  	  		var sentlen = iwordptr(itree+1)-iwordptr(itree)
+  	  		var x = 0;
+  	  		while (x < sentlen - level) {
+  	  			unnState.update(itree, x, level, level, sentlen) 	      
+  	  			x += 1
+  	  		}
+  	  		itree += 1
+  	  	}
+  	  	if (unnState.ndo > 0) {unnState.doblock(level)}
   	  }
-  	  if (unnState.ndo > 0) {unnState.doblock(level)}
   	  if (docheck) {
   	    chkBinary(level)
   	    chkUnary(level)
   	  }
-  	  level = level+1
   	  print(", %d" format level)
+  	  level = level+1
   	}
-  	if (docheck) {
-  	  fwordsb4 <-- wordsb4
+  	if (docheck && doGPU) {
   	  fwordsafter <-- wordsafter
-  	  ftreesb4 <-- treesb4
+  	  ftreesb4    <-- treesb4
   	  ftreesafter <-- treesafter
   	}
   	println("")
@@ -386,16 +422,26 @@ import edu.berkeley.nlp.PCFGLA._
 
 object BIDParser {
   
+  def defaults = {
+    runParser("c:\\data\\Grammar\\eng_sm6.gr",
+        "c:\\data\\wsj\\wsj\\",
+        "c:\\data\\Grammar\\",
+        20,
+        4)
+  }
+  
 	def main(args:Array[String]):Unit = {
 		val berkeleyGrammar = args(0)
 		val cpath = args(1)
 		val sympath = args(2)
-		var maxlen:Int = 36
+		var maxlen = 36
+		var maxsents = 100000
 		if (args.size > 3) maxlen = args(3).toInt
-		runParser(args(0), args(1), args(2), maxlen)
+		if (args.size > 4) maxsents = args(4).toInt
+		runParser(args(0), args(1), args(2), maxlen, maxsents)
 	}
 
-  def runParser(grammarPath:String, corpusPath:String, symbolsPath:String, maxlen:Int) = {
+  def runParser(grammarPath:String, corpusPath:String, symbolsPath:String, maxlen:Int, maxsents:Int) = {
   	val corpus: Corpus = new Corpus(corpusPath, TreeBankType.WSJ, 1.0, true)
     val testTrees = corpus.getDevTestingTrees
   // testTrees = corpus.getTestTrees
@@ -443,17 +489,18 @@ object BIDParser {
 	  val nnsyms = sdict.indexOf("EX_1")+1
 	  // Overlap by three symbols, since ROOT_0, EX_0 and EX_1 are both terminal and non-terminal 
 	  val ntsyms = sdict.length - nnsyms + 3
-	  val GPUmem = 1024L*1024*3000
-	  val maxnodes = (32 * (GPUmem/8/nnsyms/32)).toInt
+	  val (ffrac, gmem, gtmem) = GPUmem
+	  val maxnodes = (32 * (gmem/12/nnsyms/32)).toInt
 	  val maxwords = 32 * (maxnodes/10/32)
 	  val maxtrees = maxwords/8
 	  val stride = 8192
 	  val nthreads = 1024
-	  val leveldiff = 10f
 
-	  var ts:TreeStore = new TreeStore(nnsyms, ntsyms, maxwords, maxnodes, maxtrees, maxlen, stride, nthreads, leveldiff, cdict)
+	  var ts:TreeStore = new TreeStore(nnsyms, ntsyms, maxwords, maxnodes, maxtrees, maxlen, stride, nthreads, cdict)
 	  ts.clearState
 	  ts.loadrules(symbolsPath, nnsyms, ntsyms)
+	  val (ffrac2, gmem2, gtmem2) = GPUmem
+	  println("frac=%g, abs=%d" format (ffrac2, gmem2))
 
 	  val testTreesIterator = testTrees.iterator()
 	  val outTrees = new ArrayBuffer[Tree[String]]()
@@ -463,7 +510,7 @@ object BIDParser {
 	  var nnodes = 0
 	  var done = false
 	  
-	  while(testTreesIterator.hasNext) {//} && nsentences < 1) {
+	  while(testTreesIterator.hasNext && nsentences < maxsents) {
 	  	val testTree = testTreesIterator.next()
 	  	val testSentence = testTree.getYield
 	  	val len = testSentence.size
@@ -489,7 +536,11 @@ object BIDParser {
 	  	}
 	  }
 	  flip
-	  ts.innerscores
+	  try {
+	  	ts.innerscores
+	  } catch {
+	    case e:Exception => println("\nException thrown, exiting "+e.toString)
+	  }
 	  val ff = gflop
 	  val tt = ff._2
 	  println("maxlen=%d, nsentences=%d, nwords=%d, nnodes=%d, maxsents=%d, maxwords=%d, maxnodes=%d\ntime= %f secs, %f sents/sec, %f gflops" format 
