@@ -40,12 +40,19 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   val treesb4      = GMat(nnsyms, maxnodes)            // Score tree storage before unary rules
   val treesafter   = GMat(nnsyms, maxnodes)            // Score trees after unary rule application
   
+  val parsetrees   = GIMat(3, 2*maxwords)              // Parse trees
+  val parsevals    = GMat(1, 2*maxwords)               // node scores
+  
   val fwordsafter  = if (docheck) FMat(ntsyms, maxwords) else null // Copies of GPU matrices
   val ftreesb4     = if (docheck) FMat(nnsyms, maxnodes) else null
   val ftreesafter  = if (docheck) FMat(nnsyms, maxnodes) else null
   val rwordsafter  = if (docheck) FMat(ntsyms, maxwords) else null // For reference calculations
   val rtreesb4     = if (docheck) FMat(nnsyms, maxnodes) else null
   val rtreesafter  = if (docheck) FMat(nnsyms, maxnodes) else null
+  val rparsetrees  = if (docheck) IMat(3, 2*maxwords) else null
+  val rparsevals   = if (docheck) FMat(1, 2*maxwords) else null
+  val fparsetrees  = if (docheck) IMat(3, 2*maxwords) else null
+  val fparsevals   = if (docheck) FMat(1, 2*maxwords) else null
     
   var nndarr:IMat = null
   var nnval:FMat = null
@@ -55,6 +62,10 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   var tnval:FMat = null
   var ttdarr:IMat = null
   var ttval:FMat = null
+  var nnpp:IMat = null
+  var ntpp:IMat = null
+  var tnpp:IMat = null
+  var ttpp:IMat = null
   
   var nnuarr:IMat = null
   var nnuval:FMat = null
@@ -62,6 +73,9 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   var ntuval:FMat = null
   var ttuarr:IMat = null
   var ttuval:FMat = null
+  var nnupp:IMat = null
+  var ntupp:IMat = null
+  var ttupp:IMat = null
   
   var allmap:CSMat = null
   var nmap:CSMat = null
@@ -179,10 +193,14 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 	  wordsafter.set(minval)
 	  treesb4.set(minval)
 	  treesafter.set(minval)
+	  parsetrees.clear
+	  parsevals.set(minval)
 	  if (docheck) {
 	    rwordsafter.set(minval)
 	    rtreesb4.set(minval)
 	    rtreesafter.set(minval)
+	    rparsetrees.clear
+	    rparsevals.set(minval)
 	  }
   }
 
@@ -274,7 +292,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
     var itree = 0 
     while (itree < ntrees) {
     	val sentlen = iwordptr(itree+1)-iwordptr(itree)
-    	val ptree = treepos(itree, level, level, sentlen)
+    	val ptree = treepos(itree, 0, level, sentlen)
     	val pword = iwordptr(itree)
     	var x = 0
     	while (x < sentlen - level) {
@@ -307,6 +325,21 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 	  }
   }
   
+  def sortparent(darr:IMat, vmat:FMat):IMat = {
+    val (dmy, ii) = sort2(darr(?,0))
+    darr(?,?) = darr(ii,?)
+    vmat(?,0) = vmat(ii,0)
+    val iret = IMat(ntsyms+1,1)
+    var i = 1
+    var j = 0
+    iret(0) = 0
+    while (i <= ntsyms) {
+      while (j < darr.nrows && darr(j,0) < i) {j += 1}
+      iret(i) = j 
+      i += 1
+    }
+    iret
+  }
   
   
   def loadrules(fname:String, nnsyms0:Int, ntsyms0:Int) = {
@@ -324,6 +357,11 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
     ttdarr = load(fname+"dmodel.mat", "ttdarr")
     ttval = load(fname+"dmodel.mat", "ttval")
     
+    nnpp = sortparent(nndarr, nnval)
+    ntpp = sortparent(ntdarr, ntval)
+    tnpp = sortparent(tndarr, tnval)
+    ttpp = sortparent(ttdarr, ttval)
+    
     allmap = load(fname+"dmodel.mat", "allmap")
     nmap = allmap(0->nnsyms0,0)
     tmap = allmap((nnsyms0-3)->(nnsyms0+ntsyms0-3),0)
@@ -334,6 +372,10 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
     ntuval = load(fname+"umodel.mat", "ntuval")
     ttuarr = load(fname+"umodel.mat", "ttuarr")
     ttuval = load(fname+"umodel.mat", "ttuval")
+    
+    nnupp = sortparent(nnuarr, nnuval)
+    ntupp = sortparent(ntuarr, ntuval)
+    ttupp = sortparent(ttuarr, ttuval)
 
   }
   
@@ -347,8 +389,8 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   			var sentlen = iwordptr(itree+1)-iwordptr(itree)
   			var x = 0;
   			while (x < sentlen) {
-  				uttState.update(itree, x, 0, 0, sentlen)
   				untState.update(itree, x, 0, 0, sentlen)
+  				uttState.update(itree, x, 0, 0, sentlen)
   				x += 1
   			}
   			itree += 1
@@ -360,7 +402,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   	if (docheck) chkUnary(0)                                 // Run check of unary rules on input words
   	var level = 1
 //  	maxheight = 1
-  	while (level <= maxheight) {                             // Process this level 
+  	while (level < maxheight) {                             // Process this level 
   	  if (doGPU) {
   	  	itree = 0
   	  	while (itree < ntrees) {                             // Binary rules first
@@ -412,8 +454,147 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   	  fwordsafter <-- wordsafter
   	  ftreesb4    <-- treesb4
   	  ftreesafter <-- treesafter
+  	  fparsetrees <-- parsetrees
+  	  fparsevals <-- parsevals
   	}
   	println("")
+  }
+  
+  def vitunary(sym:Int, ltree:FMat, pleft:Int, upp:IMat, uarr:IMat, uvals:FMat):(Float, Int) = {
+    var imax = 0
+    var vmax = minval
+    var i = upp(sym)
+    while (i < upp(sym+1)) {
+      if (ltree(uarr(i,1), pleft) + uvals(i) > vmax) {
+        imax = uarr(i,1)
+        vmax = ltree(uarr(i,1), pleft) + uvals(i)
+      }
+      i += 1
+    }
+    (vmax, imax)    
+  }
+  
+  def vitbinary(sym:Int, ltree:FMat, pleft:Int, rtree:FMat, pright:Int, bpp:IMat, barr:IMat, bvals:FMat):(Float, Float, Float, Int, Int) = {
+    var lmax = -1
+    var rmax = -1
+    var vmax = minval
+    var i = bpp(sym)
+    while (i < bpp(sym+1)) {
+      if (ltree(barr(i,1), pleft) + rtree(barr(i,2), pright) + bvals(i) > vmax) {
+        lmax = barr(i,1)
+        rmax = barr(i,2)
+        vmax = ltree(barr(i,1), pleft) + rtree(barr(i,2), pright) + bvals(i)
+      }
+      i += 1
+    }
+    (vmax, if (lmax >= 0) ltree(lmax, pleft) else minval, if (rmax >= 0) rtree(rmax, pright) else minval, lmax, rmax)
+  }
+  
+  def vittree(x0:Int, sentlen:Int):Unit = {
+  	var tpos = 2*x0                                                              // Address of the root of this tree
+  	var x = x0                                                                   // Address of the current word
+  	while (tpos < 2*(x0+sentlen)-3) {
+  		val height = rparsetrees(0, tpos)                                          // Height of the current tree
+  		val isym = rparsetrees(1, tpos)                                            // Symbol at root of current tree
+  		if (height > 0) {
+  			val (uscore, tsym) = vitunary(isym, rtreesb4, treestep(x,height,sentlen), nnupp, nnuarr, nnuval)
+  			rparsetrees(2, tpos) = tsym
+  			var y = 0
+  			var lmax = -1
+  			var rmax = -1
+  			var ylmax = -2
+  			var yrmax = -2
+  			var vmax = minval
+  			var vlmax = minval
+  			var vrmax = minval
+  			while (y < height) {
+  				val ts1 = treestep(x, y, sentlen)
+  				val ts2 = treestep(x+y+1, height-y-1, sentlen)
+  				val (vm0, vl0, vr0, lm0, rm0) = vitbinary(tsym, rtreesafter, ts1, rtreesafter, ts2, nnpp, nndarr, nnval)
+  				if (vm0 > vmax) {
+  					vmax = vm0
+  					lmax = lm0
+  					rmax = rm0
+  					vlmax = vl0
+  					vrmax = vr0
+  					vrmax = minval
+  					ylmax = y
+  					yrmax = height-y-1
+  				}
+  				if (y == 0) {
+  					val (vm0, vl0, vr0, lm0, rm0) = vitbinary(tsym, rwordsafter, x, rtreesafter, ts2,  tnpp, tndarr, tnval)
+  					if (vm0 > vmax) {
+  						vmax = vm0
+  						lmax = nnsyms0-3+lm0
+  						rmax = rm0
+  						vlmax = vl0
+  						vrmax = vr0
+  						ylmax = -1
+  						yrmax = height-y-1
+  					}
+  				}
+  				if (y == height-1) {
+  					val (vm0, vl0, vr0, lm0, rm0) = vitbinary(tsym, rtreesafter, ts1, rwordsafter, x+y+1, ntpp, ntdarr, ntval) 
+  					if (vm0 > vmax) {
+  						vmax = vm0
+  						lmax = lm0
+  						rmax = nnsyms0-3+rm0
+  						vlmax = vl0
+  						vrmax = vr0
+  						ylmax = y
+  						yrmax = -1
+  					}
+  				}
+  				if (1 == height) {
+  					val (vm0, vl0, vr0, lm0, rm0) = vitbinary(tsym, rwordsafter, x, rwordsafter, x+y+1, ttpp, ttdarr, ttval) 
+  					if (vm0 > vmax) {
+  						vmax = vm0
+  						lmax = nnsyms0-3+lm0
+  						rmax = nnsyms0-3+rm0
+  						vlmax = vl0
+  						vrmax = vr0
+  						ylmax = -1
+  						yrmax = -1
+  					}
+  				}        
+  				y += 1
+  			}
+  			val ymax = math.max(0, ylmax)
+  			rparsetrees(0, tpos+1) = ylmax
+  			rparsetrees(1, tpos+1) = lmax
+  			rparsevals(tpos+1) = vlmax
+  			rparsetrees(0, tpos+2*(ymax+1)) = yrmax
+  			rparsetrees(1, tpos+2*(ymax+1)) = rmax
+  			rparsevals(tpos+2*(ymax+1)) = vrmax     
+  		} else {                                                               // height == 0, advance the leaf pointer
+  		  if (height == 0) {                                                   // max symbol was a non-terminal
+  			val (uscore, tsym) = vitunary(isym, fwordsb4, x, ntupp, ntuarr, ntuval)
+  			rparsetrees(2, tpos) = tsym
+  		  } else {                                                             // max symbol was a terminal
+  		    val (uscore, tsym) = vitunary(isym-nnsyms0+3, fwordsb4, x, ntupp, ntuarr, ntuval)
+  		    rparsetrees(2, tpos) = tsym
+  		  }
+  		  x += 1  		  
+  		}
+  		tpos += 1                                                              // Advance the tree pointer
+    }
+  }
+  
+  def viterbi = {
+    var itree = 0
+    if (docheck) {
+      while (itree < ntrees) {                                                // perform viterbi search over each tree
+      	val iwbase = iwordptr(itree)
+      	var sentlen = iwordptr(itree+1) - iwbase                   
+      	val (sc, isym) = maxi2(rtreesafter(?, iwbase + treestep(0, sentlen-1, sentlen)))  // Get the best root symbol
+      	rparsetrees(1, iwbase*2) = isym.v                                                 // Initialize the root symbol
+      	rparsetrees(0, iwbase*2) = sentlen-1                                              // Initialize root tree height
+      	rparsevals(iwbase*2) = sc                                                         // Root tree score
+      	vittree(iwbase, sentlen)
+        itree += 1
+      }
+      println("val=%d" format rparsetrees(0,0))
+    }
   }
 
 } 
@@ -536,11 +717,12 @@ object BIDParser {
 	  	}
 	  }
 	  flip
-	  try {
+//	  try {
 	  	ts.innerscores
-	  } catch {
-	    case e:Exception => println("\nException thrown, exiting "+e.toString)
-	  }
+	  	ts.viterbi
+//	  } catch {
+//	    case e:Exception => println("\nException thrown, exiting "+e.toString)
+//	  }
 	  val ff = gflop
 	  val tt = ff._2
 	  println("maxlen=%d, nsentences=%d, nwords=%d, nnodes=%d, maxsents=%d, maxwords=%d, maxnodes=%d\ntime= %f secs, %f sents/sec, %f gflops" format 
