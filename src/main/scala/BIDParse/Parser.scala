@@ -383,7 +383,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
     tnpp = sortparent(tndarr, tnval, nnsyms0)
     ttpp = sortparent(ttdarr, ttval, nnsyms0)
     
-    allmap = load(fname+"dmodel.mat", "allmap")
+    allmap = load(fname+"dmodel.mat", "allmap")    
     nmap = allmap(0->nnsyms0,0)
     tmap = allmap((nnsyms0-3)->(nnsyms0+ntsyms0-3),0)
     
@@ -649,11 +649,11 @@ object BIDParser {
   }
 
   def run(maxlen:Int=30, maxsents:Int=10000, docheck:Boolean=false, doGPU:Boolean=true,
-      grammarPath:String="c:\\data\\Grammar\\eng_sm6.gr", 
-      corpusPath:String="c:\\data\\wsj\\wsj\\", 
-      symbolsPath:String="c:\\data\\Grammar\\") = {
+      corpusPath:String="/data/wsj/wsj/", 
+      grammarPath:String="grammar/eng_sm6.gr", 
+      symbolsPath:String="grammar/") = {
   	val corpus: Corpus = new Corpus(corpusPath, TreeBankType.WSJ, 1.0, true)
-    val testTrees = corpus.getFinalTestingTrees
+    val testTrees = corpus.getDevTestingTrees
 
     val eval = new EnglishPennTreebankParseEvaluator.LabeledConstituentEval[String](new util.HashSet[String](util.Arrays.asList("ROOT","PSEUDO")),
     		new util.HashSet(util.Arrays.asList("''", "``", ".", ":", ",")))
@@ -672,15 +672,17 @@ object BIDParser {
 
 
 	  val vitParse = true
+	  val cdict:CSMat = load(symbolsPath+"dmodel.mat", "allmap")
+	  val sdict = cdict.data
 
-	  val sdict:IndexedSeq[String] =(
+	 /* val sdict:IndexedSeq[String] =(
 	  		Source.fromFile(symbolsPath+"fulldict.txt")
 	  		.getLines()
 	  		.map(_.trim)
 	  		.toIndexedSeq
 	  )
 	  val cdict = CSMat(sdict.length,1)
-	  for (i <- 0 until sdict.length) {cdict(i,0) = sdict(i)}
+	  for (i <- 0 until sdict.length) {cdict(i,0) = sdict(i)} */
 
 	  val substateIds = Array.ofDim[Array[Int]](grammar.numStates)
 	  var id = 0

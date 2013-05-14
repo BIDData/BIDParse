@@ -46,7 +46,7 @@ int pcopy_transpose_in(int *iptrs, float *in, float *out, int stride, int nrows,
   __pcopy_transpose_in<<<griddims,blockdims>>>(iptrs, in, out, stride, nrows, ncols); 
   cudaDeviceSynchronize();
   err = cudaGetLastError();
-  if (err != cudaSuccess) {fprintf(stderr, "cuda error in pcopy_transpose_out"); return err;}
+  if (err != cudaSuccess) {fprintf(stderr, "cuda error in pcopy_transpose_in"); return err;}
   return 0;
 }
 
@@ -71,7 +71,8 @@ __global__ void __pcopy_transpose_out(int *optrs, float *in, float *out, int ins
       if (xb + threadIdx.x < nrows) {
         int ylim = min(ncols, yb + BLOCKDIM);
         for (int y = threadIdx.y + yb; y < ylim; y += blockDim.y) {
-          atomicAdd(&out[optrs[y]*nrows + threadIdx.x + xb], tile[threadIdx.x][y-iy]);
+//          atomicAdd(&out[optrs[y]*nrows + threadIdx.x + xb], tile[threadIdx.x][y-iy]);
+          atomicMin((int *)&out[optrs[y]*nrows + threadIdx.x + xb], *(int *)(&tile[threadIdx.x][y-iy]));
         }
       }
       __syncthreads();
