@@ -173,114 +173,205 @@ void testvmax(float *vec, float *cvec, int n, int nreps, int iter) {
   cudaFree(pkimax);
 }
 
-__global__ void viterbi(int *lrules, int *rrules, float *bivals, int *bip, int n, 
-                        int *unirules, float *univals, int *unip,
-                        float **allbitrees, float **allunitrees, int *lengths, 
-                        int **parsetrees, int **nsyms, float **nscores) {
-  __shared__ float maxval[1];
-  __shared__ int imaxi[1];
-  __shared__ int left[1];
-  __shared__ float SHSTORE(lvals);
-  __shared__ float SHSTORE(rvals);
-  __shared__ float SHSTORE(lscores);
-  __shared__ float SHSTORE(rscores);
+#define NVITTHREADS 128
+#define MINVAL -1.0e8f
 
-  float *bitree = allbitrees[blockIdx.x];                              // Each block processes one tree, so gather all the data
-  float *unitree = allunitrees[blockIdx.x];                            // for this tree.
-  int length = lengths[blockIdx.x];
-  int *parsetree = parsetrees[blockIdx.x];
-  int *nsym = nsyms[blockIdx.x];
-  float *nscore = nscores[blockIdx.x];
+#define treestep(x,y,len) ((x) + (y)*len - (y)*((y)-1)/2)
 
-  for (int k = threadIdx.x; k < n; k += blockDim.x) {
-    SHACCESS(lvals, k) = bitree[k + NSYMS*TREEINDX(0, length-1)];    // Load root node scores
+typedef struct maxfields {
+  int l;
+  int r;
+  int y;
+  float vl;
+  float vr;
+  float v;
+} maxfields_t;
+
+typedef struct dcontents {
+  int iv;
+  float fv;
+} dcontents_t;
+  
+__device__ void __vitunary(int isym, double *dmax, float *lscores, int nsyms,
+			   float *lmat, int tti, int *upp, int *uarr, float *uval, int nurules)
+{
+  double dtest;
+  dcontents_t *dt = (dcontents_t *)&dtest;
+  dt->iv = 0;
+  dt->fv = MINVAL;
+  __syncthreads();
+  for (int i = threadIdx.x; i < nsyms; i += blockDim.x) {               // Load input symbol scores
+    lscores[i] = lmat[tti + i];
+  }
+  if (threadIdx.x != 0) dmax[threadIdx.x] = dtest;                      // Clear max value tree, except dmax[0]
+  __syncthreads();
+  for (int t = upp[isym] + threadIdx.x; t < upp[isym+1]; t += blockDim.x) {
+    int ileft = uarr[nurules + t];
+    dt->iv = ileft;                                                     // Combine score and rule index into a pseudo-double
+    dt->fv = uval[t] + lscores[ileft];
+    dmax[threadIdx.x] = max(dmax[threadIdx.x], dtest);                  // Update the max for this thread
   }
   __syncthreads();
+  for (int step = 1; step < NVITTHREADS; step *= 2) {                   // Combine max values across threads in a tree
+    if (threadIdx.x % (2*step) == 0) {
+      dmax[threadIdx.x] = max(dmax[threadIdx.x+step], dmax[threadIdx.x]);
+    }
+    __syncthreads();
+  }
+}
 
-  findvmax(lvals, n, maxval, imaxi);                                   // Find the best score
-
-  if (threadIdx.x < 1) {                                               // Initialize root node props
-    parsetree[0] = 2*length-1;
-    nsym[0] = imaxi[0];
-    nscore[0] = maxval[0];
-    left[0] = 0;                                                       // Number of input symbols processed so far/ x coord
+__device__ void __vitbinary(int isym, double *dmax, maxfields_t *maxf, int y, 
+			    float *lscores, int nlsyms, float *rscores, int nrsyms,
+			    float *lmat, int lbase, int lsymoff, float *rmat, int rbase, int rsymoff, 
+			    int *pp, int *darr, float *bval, int nbrules)
+{
+  double dtest;
+  dcontents_t *dt = (dcontents_t *)&dtest;
+  double oldmax = dmax[0];
+  dt->iv = 0;
+  dt->fv = MINVAL;
+  __syncthreads();
+  for (int i = threadIdx.x; i < nlsyms; i += blockDim.x) {
+    lscores[i] = lmat[lbase + i];
+  }
+  for (int i = threadIdx.x; i < nrsyms; i += blockDim.x) {
+    rscores[i] = rmat[rbase + i];
+  }
+  if (threadIdx.x != 0) dmax[threadIdx.x] = dtest;
+  __syncthreads();
+  for (int t = pp[isym] + threadIdx.x; t < pp[isym+1]; t += blockDim.x) {
+    int ileft = darr[nbrules + t];
+    int iright = darr[2*nbrules + t];
+    dt->iv = t;
+    dt->fv = bval[t] + lscores[ileft] + rscores[iright];
+    dmax[threadIdx.x] = max(dmax[threadIdx.x], dtest);
   }
   __syncthreads();
-
-  for (int i = 0; i < 2*length-3; i++) {
-    int x = left[0];                                                   // x coord of current node                       
-    int y = (parsetree[i]-i-1)/2;                                      // y coord of current node
-    int here = nsym[i];                                                // this node's best symbol
-
-    float lmax = 0;                                                    // score of best rule, tallied over left children
-    float rmax = 0;                                                    // score of best rule, tallied over right children
-    int hmax = 0;                                                      // height of best left child
-    int symleft = -1;                                                  // best left symbol
-    int symright = -1;                                                 // best right symbol
-
-    //    float thisc = nscore[i];
-
-    for (int k = threadIdx.x; k < n; k += blockDim.x) {
-      SHACCESS(lvals, k) = unitree[k + NSYMS*TREEINDX(x,y)];         // load pre-unary-rule scores for this node
-      SHACCESS(lscores, k) = 0;
-    }
-    __syncthreads();
-
-    for (int k = unip[here] + threadIdx.x; k < unip[here+1]; k += blockIdx.x) {  // Compute pre-unary rule scores given root symbol
-      float tscore = SHACCESS(lvals,unirules[k]) * univals[k];
-      SHACCESS(lscores, unirules[k]) = max(SHACCESS(lscores, unirules[k]), tscore);
-    }
-    __syncthreads();
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
-    findvmax(lscores, n, maxval, imaxi);                               // Find best pre-unary symbol
-    here = imaxi[0];
-    //   thisc = maxvals[0];
-
-    for (int j = 0; j < y; j++) {                                      // Loop over splits for this node, if its not a leaf
-      for (int k = threadIdx.x; k < n; k += blockDim.x) {
-        SHACCESS(lvals, k) = bitree[k + NSYMS*TREEINDX(x,j)];          // Load left and right node score for this split
-        SHACCESS(rvals, k) = bitree[k + NSYMS*TREEINDX(x+1+j, y-1-j)];
-        SHACCESS(lscores, k) = 0;
-        SHACCESS(rscores, k) = 0;
-      }
-      __syncthreads();
-
-      for (int k = bip[here] + threadIdx.x; k < bip[here+1]; k += blockIdx.x) { // Compute left and right scores given root symbol
-        float tscore = SHACCESS(lvals,lrules[k]) * SHACCESS(rvals,rrules[k]) * bivals[k];
-        SHACCESS(lscores, lrules[k]) = max(SHACCESS(lscores, lrules[k]), tscore);
-        SHACCESS(rscores, rrules[k]) = max(SHACCESS(rscores, rrules[k]), tscore);
-      }
-      __syncthreads();
-
-      findvmax(lscores, n, maxval, imaxi);                             // Find the best left score and its height
-      if (threadIdx.x < 1 && maxval[0] > lmax) {
-        lmax = maxval[0];
-        hmax = j;
-        symleft = imaxi[0];
-      }
-      __syncthreads();
-
-      findvmax(rscores, n, maxval, imaxi);                             // Find the best (hopefully matching) right score
-      if (threadIdx.x < 1 && maxval[0] > rmax) {
-        rmax = maxval[0];
-        symright = imaxi[0];
-      }
-      __syncthreads();
-    }
-
-    if (threadIdx.x < 1) {                                             // Update data with one thread
-      if (y > 0) {                                                     // If we're not at a leaf, process children
-        int nexti = i+2*hmax+2;                                        // Tree is prefix order, left child is always the next node
-        parsetree[i+1] = nexti;                                        // parsetree[x] points to next sibling of x, or just beyond own subtree for right siblings
-        nsym[i+1] = symleft;
-        nscore[i+1] = lmax;
-        parsetree[nexti] = parsetree[i];                               // Right sibling points just beyond own subtree (same as beyond parent's subtree)
-        nsym[nexti] = symright;
-        nscore[nexti] = rmax;
-      } else {                                                         // We processed a leaf, so advance our leaf pointer
-        left[0] = left[0] + 1;
-      }
+  for (int step = 1; step < NVITTHREADS; step *= 2) {
+    if (threadIdx.x % (2*step) == 0) {
+      dmax[threadIdx.x] = max(dmax[threadIdx.x+step], dmax[threadIdx.x]);
     }
     __syncthreads();
   }
+  if (threadIdx.x == 0) {
+    dtest = dmax[0];
+    if (oldmax != dtest) {
+      int ileft = darr[nbrules + dt->iv];
+      int iright = darr[2*nbrules + dt->iv];
+      maxf->l = ileft + lsymoff;
+      maxf->r = iright + rsymoff;
+      maxf->y = y;
+      maxf->vl = lscores[ileft];
+      maxf->vr = rscores[iright];
+      maxf->v = dt->fv;
+    }
+  }
+  __syncthreads();
+}
+
+__global__ void __viterbi(int nnsyms0, int ntsyms0, int nnsyms, int ntsyms, int ntrees, int isym,
+			  float *wordsb4, float *wordsafter, float *treesb4, float *treesafter, 
+			  int *iwordptr, int *itreeptr, int *parsetrees, float *parsevals, 
+			  int *pp, int *darr, float *bval, int nbrules,
+			  int *upp, int *uarr, float *uval, int nurules)
+{
+  __shared__ float lscores[NSYMS];
+  __shared__ float rscores[NSYMS];
+  __shared__ double dmax[NVITTHREADS];
+  __shared__ maxfields_t maxf;
+
+  const int prows = 3;
+  int noff = nnsyms0 - 3;
+  int x0 = iwordptr[blockIdx.x];
+  int sentlen = iwordptr[blockIdx.x+1] - x0;
+  int x = x0;                                             // Word position
+  int tpos = 2*x0;                                        // Parse tree position
+  int pti = prows*tpos;
+  parsetrees[pti] = sentlen-1;                            // Init height of the main tree
+  parsetrees[1+pti] = isym;                               // Symbol at root of main tree
+  dcontents_t *dm0 = (dcontents_t *)&dmax[0];
+  while (tpos < 2*(x0+sentlen)-1) {
+    pti = prows*tpos;
+    int height = parsetrees[pti];                         // Height of the current tree
+    isym = parsetrees[1+pti];                             // Symbol at root of current tree
+    int tti = treestep(x,height,sentlen);
+    if (threadIdx.x == 0) {                               // Clear the maximum var
+      dm0->iv = 0;                                        // Low order word holds the rule number (use a double to hold value + rule number)
+      dm0->fv = MINVAL;                                   // High order word holds the value
+    }
+    if (height > 0) {
+      __vitunary(isym, dmax, lscores, nnsyms0, treesb4, tti*nnsyms, upp, uarr, uval, nurules); // Pull down the root symbol through unary rules
+      isym = dm0->iv;
+      if (threadIdx.x == 0) {
+	parsetrees[2+pti] = isym;                         // Save the result in parsetrees[2,pti]
+	maxf.l = -1;                                      // maxf holds all the metadata for the best rule
+	maxf.r = -1;
+	maxf.y = -1;
+	maxf.vl = MINVAL;
+	maxf.vr = MINVAL;
+	maxf.v = MINVAL;
+	dm0->iv = 0;
+	dm0->fv = MINVAL;
+      }
+      __syncthreads();
+      for (int y = 0; y < height; y++) {                  // Process all splits for this node
+	int ts1 = nnsyms*treestep(x, y, sentlen);         // Array addresses of children
+	int ts2 = nnsyms*treestep(x+y+1, height-y-1, sentlen);
+	int x1 = ntsyms*x;
+	int x2 = ntsyms*(x+y+1);
+
+	__vitbinary(isym, dmax, &maxf, y, lscores, nnsyms0, rscores, nnsyms0, 
+		    treesafter, ts1, 0, treesafter, ts2, 0, pp, darr, bval, nbrules);
+	if (y == 0) {
+	  __vitbinary(isym, dmax, &maxf, y, lscores, ntsyms0, rscores, nnsyms0, 
+		      wordsafter, x1, noff, treesafter, ts2, 0, pp+2*(nnsyms0+1), darr, bval, nbrules);
+	}
+	if (y == height-1) {
+	  __vitbinary(isym, dmax, &maxf, y, lscores, nnsyms0, rscores, ntsyms0, 
+		      treesafter, ts1, 0, wordsafter, x2, noff, pp+(nnsyms0+1), darr, bval, nbrules);
+	}
+	if (height == 1) {
+	  __vitbinary(isym, dmax, &maxf, y, lscores, ntsyms0, rscores, ntsyms0, 
+		      wordsafter, x1, noff, wordsafter, x2, noff, pp+3*(nnsyms0+1), darr, bval, nbrules);
+	}
+      }  					
+      if (threadIdx.x == 0) {                            // Update parsetree data. 
+	parsetrees[prows*(tpos+1)] = maxf.y;             // Left child (next position in tree array) height
+	parsetrees[1+prows*(tpos+1)] = maxf.l;           // Left child symbol
+	parsevals[tpos+1] = maxf.vl;                     // Left child score
+	int nexti = tpos+2*(maxf.y+1);                   // Address of right child
+	parsetrees[prows*nexti] = height - maxf.y - 1;   // Right child height
+	parsetrees[1+prows*nexti] = maxf.r;              // Right child symbol
+	parsevals[nexti] = maxf.vr;                      // Right child score
+      }
+    } else {                                             // height == 0, advance the leaf pointer
+      if (isym < nnsyms0-3) {                              // max symbol was a non-terminal
+	__vitunary(isym, dmax, lscores, ntsyms0, wordsb4, x*ntsyms, upp+(nnsyms0+1), uarr, uval, nurules);   // back down through unary rules
+      } else {                                           // max symbol was a terminal
+      __vitunary(isym-noff, dmax, lscores, ntsyms0, wordsb4, x*ntsyms, upp+2*(nnsyms0+1), uarr, uval, nurules); 
+      }
+      if (threadIdx.x == 0) parsetrees[2+prows*tpos] = (dm0->iv) + noff; 
+      x++;                                               // We consumed a non-terminal, so step the word ptr
+    }
+  __syncthreads();
+  tpos++;                                              // Advance the tree pointer
+  }
+}
+
+
+int viterbi(int nnsyms0, int ntsyms0, int nnsyms, int ntsyms, int ntrees, int isym,
+	    float *wordsb4, float *wordsafter, float *treesb4, float *treesafter, 
+	    int *iwordptr, int *itreeptr, int *parsetrees, float *parsevals, 
+	    int *pp, int *darr, float *bval, int nbrules,
+	    int *upp, int *uarr, float *uval, int nurules) {
+
+  __viterbi<<<ntrees,NVITTHREADS>>>(nnsyms0, ntsyms0, nnsyms, ntsyms, ntrees, isym,
+				    wordsb4, wordsafter, treesb4, treesafter,
+				    iwordptr, itreeptr, parsetrees, parsevals,
+				    pp, darr, bval, nbrules,
+				    upp, uarr, uval, nurules);
+
+  cudaDeviceSynchronize();
+  cudaError_t err = cudaGetLastError();
+  return err;
 }

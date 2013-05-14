@@ -12,6 +12,7 @@ import edu.berkeley.bid.CUMAT
 import edu.berkeley.bid.CBLAS
 import edu.berkeley.bid.PARSE._
 import edu.berkeley.nlp.syntax.Tree
+import edu.berkeley.nlp.PCFGLA._
 import edu.berkeley.nlp.PCFGLA.Corpus.TreeBankType
 import scala.collection.JavaConverters._
 import edu.berkeley.nlp.parser.EnglishPennTreebankParseEvaluator
@@ -23,37 +24,41 @@ import io.Source
 
 
 class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes:Int, val maxtrees:Int, 
-		            val maxlen:Int, val stride:Int, val nthreads:Int, val cdict:CSMat) {
+		            val maxlen:Int, val stride:Int, val nthreads:Int, val cdict:CSMat, val docheck:Boolean, val doGPU:Boolean) {
 
-  val docheck = true
-  val doGPU = true
   val usemaxsum = true
   val nnsyms = 32 * ((nnsyms0+31) / 32)
   val ntsyms = 32 * ((ntsyms0+31) / 32)
 
   val minval = if (usemaxsum) -1e8f else 0f
   val floatmin = 1e-40f
-  // Storage for input words and score trees
-  val fwordsb4     = FMat(ntsyms, maxwords)            // Accumulate terminal scores here
-  val wordsb4      = GMat(ntsyms, maxwords)            // Buffer in GPU memory for terminal scores
-  val wordsafter   = GMat(ntsyms, maxwords)            // Terminal scores after unary rule application
-  val treesb4      = GMat(nnsyms, maxnodes)            // Score tree storage before unary rules
-  val treesafter   = GMat(nnsyms, maxnodes)            // Score trees after unary rule application
+
+  val fwordsb4     = FMat(ntsyms, maxwords)                          // Input terminal scores
+  val iwordptr     = IMat(maxwords,1)
+  val itreeptr     = IMat(maxtrees,1)
   
-  val parsetrees   = GIMat(3, 2*maxwords)              // Parse trees
-  val parsevals    = GMat(1, 2*maxwords)               // node scores
+  // GPU matrices
+  val wordsb4      = if (doGPU) GMat(ntsyms, maxwords) else null     // Buffer in GPU memory for terminal scores
+  val wordsafter   = if (doGPU) GMat(ntsyms, maxwords) else null     // Terminal scores after unary rule application
+  val treesb4      = if (doGPU) GMat(nnsyms, maxnodes) else null     // Score tree storage before unary rules
+  val treesafter   = if (doGPU) GMat(nnsyms, maxnodes) else null     // Score trees after unary rule application  
+  val parsetrees   = if (doGPU) GIMat(3, 2*maxwords) else null       // Parse trees
+  val parsevals    = if (doGPU) GMat(1, 2*maxwords)  else null       // node scores
   
-  val fwordsafter  = if (docheck) FMat(ntsyms, maxwords) else null // Copies of GPU matrices
-  val ftreesb4     = if (docheck) FMat(nnsyms, maxnodes) else null
-  val ftreesafter  = if (docheck) FMat(nnsyms, maxnodes) else null
-  val rwordsafter  = if (docheck) FMat(ntsyms, maxwords) else null // For reference calculations
+  // CPU matrices (r prefix) and copies of GPU matrices in CPU memory (f prefix)
+  val rwordsafter  = if (docheck) FMat(ntsyms, maxwords) else null    // For reference calculations
   val rtreesb4     = if (docheck) FMat(nnsyms, maxnodes) else null
   val rtreesafter  = if (docheck) FMat(nnsyms, maxnodes) else null
   val rparsetrees  = if (docheck) IMat(3, 2*maxwords) else null
   val rparsevals   = if (docheck) FMat(1, 2*maxwords) else null
-  val fparsetrees  = if (docheck) IMat(3, 2*maxwords) else null
-  val fparsevals   = if (docheck) FMat(1, 2*maxwords) else null
+
+  val fwordsafter  = if (doGPU) FMat(ntsyms, maxwords) else null   
+  val ftreesb4     = if (doGPU) FMat(nnsyms, maxnodes) else null
+  val ftreesafter  = if (doGPU) FMat(nnsyms, maxnodes) else null
+  val fparsetrees  = if (doGPU) IMat(3, 2*maxwords) else null
+  val fparsevals   = if (doGPU) FMat(1, 2*maxwords) else null
     
+  // Rule matrices 
   var nndarr:IMat = null
   var nnval:FMat = null
   var ntdarr:IMat = null
@@ -77,21 +82,28 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   var ntupp:IMat = null
   var ttupp:IMat = null
   
+  var dpp:GIMat = null
+  var darr:GIMat = null
+  var bval:GMat = null
+  var upp:GIMat = null
+  var uarr:GIMat = null
+  var uval:GMat = null
+  
   var allmap:CSMat = null
   var nmap:CSMat = null
   var tmap:CSMat = null
   
   // Buffers (transposed relative to tree store) for binary rule application
-  val leftbuff     = GMat(stride, ntsyms)              // Left score buffer       
-  val rightbuff    = GMat(stride, ntsyms)              // Right score buffer 
-  val parbuff      = GMat(stride, ntsyms)              // Parent score buffer 
+  val leftbuff     = if (doGPU) GMat(stride, ntsyms) else null       // Left score buffer       
+  val rightbuff    = if (doGPU) GMat(stride, ntsyms) else null       // Right score buffer 
+  val parbuff      = if (doGPU) GMat(stride, ntsyms) else null       // Parent score buffer 
  
   // Arrays of indices to and from word and tree storage for copies into the above buffers 
-  val itreeptr     = IMat(maxtrees,1)
-  val iwordptr     = IMat(maxwords,1)
- 	val leftptrs     = GIMat(stride,1) 
- 	val rightptrs    = GIMat(stride,1)
-  val parptrs      = GIMat(stride,1)
+  val gtreeptr     = if (doGPU) GIMat(maxtrees,1) else null
+  val gwordptr     = if (doGPU) GIMat(maxwords,1) else null
+  val leftptrs     = if (doGPU) GIMat(stride,1) else null
+  val rightptrs    = if (doGPU) GIMat(stride,1) else null
+  val parptrs      = if (doGPU) GIMat(stride,1) else null
  
   // State variables to track stored number of trees, words, nodes etc
   var ntrees = 0
@@ -99,7 +111,10 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   var nwords = 0
   var maxheight = 0
   itreeptr(0) = 0  
-	iwordptr(0) = 0
+  iwordptr(0) = 0
+	
+  var parser:CoarseToFineMaxRuleParser = null
+  var grammar:Grammar = null
 
 	// This class holds internal state for a particular kernel (NN, NT, TN, or TT). When 
 	// its buffers fill, it copies from the tree store into the transposed buffers, applies
@@ -116,11 +131,11 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 
 	  // Process a block of data. Copy and transpose from tree storage, run kernels, copy back
 	  def doblock(level:Int) = {
-		  var err = JCuda.cudaMemcpy(parptrs.data, iparpt, ndo*Sizeof.INT, cudaMemcpyHostToDevice)             // Copy IMat data to GIMats
+		var err = JCuda.cudaMemcpy(parptrs.data, iparpt, ndo*Sizeof.INT, cudaMemcpyHostToDevice)             // Copy IMat data to GIMats
 	    if (err != 0) throw new RuntimeException("CUDA error in doblock:cudaMemcpy1")
 		  
-		  err = JCuda.cudaMemcpy(leftptrs.data, ileftpt, ndo*Sizeof.INT, cudaMemcpyHostToDevice)
-		  if (err != 0) throw new RuntimeException("CUDA error in doblock:cudaMemcpy2")
+		err = JCuda.cudaMemcpy(leftptrs.data, ileftpt, ndo*Sizeof.INT, cudaMemcpyHostToDevice)
+		if (err != 0) throw new RuntimeException("CUDA error in doblock:cudaMemcpy2")
 		  
 	    err = pcopytxin(parptrs.data, parr.data, parbuff.data, stride, parr.nrows, ndo)        // Do the data copy/transpose
 	    if (err != 0) throw new RuntimeException("CUDA error in doblock:pcopytxin1")
@@ -147,31 +162,35 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 	  
 	  def update(itree:Int, x:Int, y:Int, level:Int, treelen:Int) = {                              // Add the indices for one binary rule application
 	  	iparptrs(ndo) = ppos(itree) + treestep(x, level, treelen)
-  	  ileftptrs(ndo) = lpos(itree) + treestep(x, y, treelen);
+	  	ileftptrs(ndo) = lpos(itree) + treestep(x, y, treelen);
 	  	if (rpos != null) {
 	  		irightptrs(ndo) = rpos(itree) + treestep(x+y+1, level-y-1, treelen)
 	  	}
-  	  ndo = ndo + 1
-  	  if (ndo >= stride) doblock(level);
+	  	ndo = ndo + 1
+	  	if (ndo >= stride) doblock(level);
 	  }
 	  
   }
-
-  case class OutData(wordsb4:FMat, wordsafter:FMat, treesb4:FMat, treesafter:FMat)
-
-  def copyOut: OutData = {
-    OutData(fwordsb4, FMat(wordsafter), FMat(treesb4), FMat(treesafter))
-  }
   
-  // Create all the kernel states. Binary rules first
-  val nnState = new kState(treesb4, treesafter, treesafter, itreeptr, itreeptr, itreeptr, 373375, nnrules _)
-  val ntState = new kState(treesb4, treesafter, wordsafter, itreeptr, itreeptr, iwordptr, 334338, ntrules _)
-  val tnState = new kState(treesb4, wordsafter, treesafter, itreeptr, iwordptr, itreeptr, 417022, tnrules _)
-  val ttState = new kState(treesb4, wordsafter, wordsafter, itreeptr, iwordptr, iwordptr, 600835, ttrules _)
-  // Unary rule kernels
-  val unnState = new kState(treesafter, treesb4, null, itreeptr, itreeptr, null, 35343, nnrulesu _)
-  val untState = new kState(treesafter, wordsb4, null, itreeptr, iwordptr, null, 95253, ntrulesu _)
-  val uttState = new kState(wordsafter, wordsb4, null, iwordptr, iwordptr, null, 684, ttrulesu _)
+  var nnState:kState = null
+  var ntState:kState = null
+  var tnState:kState = null
+  var ttState:kState = null
+  var unnState:kState = null
+  var untState:kState = null
+  var uttState:kState = null
+  
+  def createKstates = {
+	  // Create all the kernel states. Binary rules first
+	  nnState = new kState(treesb4, treesafter, treesafter, itreeptr, itreeptr, itreeptr, nndarr.nrows, nnrules _)
+	  ntState = new kState(treesb4, treesafter, wordsafter, itreeptr, itreeptr, iwordptr, ntdarr.nrows, ntrules _)
+	  tnState = new kState(treesb4, wordsafter, treesafter, itreeptr, iwordptr, itreeptr, tndarr.nrows, tnrules _)
+	  ttState = new kState(treesb4, wordsafter, wordsafter, itreeptr, iwordptr, iwordptr, ttdarr.nrows, ttrules _)
+	  // Unary rule kernels
+	  unnState = new kState(treesafter, treesb4, null, itreeptr, itreeptr, null, nnuarr.nrows, nnrulesu _)
+	  untState = new kState(treesafter, wordsb4, null, itreeptr, iwordptr, null, ntuarr.nrows, ntrulesu _)
+	  uttState = new kState(wordsafter, wordsb4, null, iwordptr, iwordptr, null, ttuarr.nrows, ttrulesu _)
+  }
   
   // Clear the state for another parsing run
   def clearState = {
@@ -181,20 +200,22 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 	  nnodes = 0
 	  nwords = 0
 	  maxheight = 0
-	  nnState.ndo = 0
-	  ntState.ndo = 0
-	  tnState.ndo = 0
-	  ttState.ndo = 0
-	  unnState.ndo = 0
-	  untState.ndo = 0
-	  uttState.ndo = 0
+	  if (nnState != null) nnState.ndo = 0
+	  if (ntState != null) ntState.ndo = 0
+	  if (tnState != null) tnState.ndo = 0
+	  if (ttState != null) ttState.ndo = 0
+	  if (unnState != null) unnState.ndo = 0
+	  if (untState != null) untState.ndo = 0
+	  if (uttState != null) uttState.ndo = 0
 	  fwordsb4.set(minval)
-	  wordsb4.set(minval)
-	  wordsafter.set(minval)
-	  treesb4.set(minval)
-	  treesafter.set(minval)
-	  parsetrees.clear
-	  parsevals.set(minval)
+	  if (doGPU) {
+		wordsb4.set(minval)
+		wordsafter.set(minval)
+		treesb4.set(minval)
+		treesafter.set(minval)
+		parsetrees.clear
+		parsevals.set(minval)
+	  }
 	  if (docheck) {
 	    rwordsafter.set(minval)
 	    rtreesb4.set(minval)
@@ -325,15 +346,15 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 	  }
   }
   
-  def sortparent(darr:IMat, vmat:FMat):IMat = {
+  def sortparent(darr:IMat, vmat:FMat, nsyms:Int):IMat = {
     val (dmy, ii) = sort2(darr(?,0))
     darr(?,?) = darr(ii,?)
     vmat(?,0) = vmat(ii,0)
-    val iret = IMat(ntsyms+1,1)
+    val iret = IMat(nsyms+1,1)
     var i = 1
     var j = 0
     iret(0) = 0
-    while (i <= ntsyms) {
+    while (i <= nsyms) {
       while (j < darr.nrows && darr(j,0) < i) {j += 1}
       iret(i) = j 
       i += 1
@@ -357,10 +378,10 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
     ttdarr = load(fname+"dmodel.mat", "ttdarr")
     ttval = load(fname+"dmodel.mat", "ttval")
     
-    nnpp = sortparent(nndarr, nnval)
-    ntpp = sortparent(ntdarr, ntval)
-    tnpp = sortparent(tndarr, tnval)
-    ttpp = sortparent(ttdarr, ttval)
+    nnpp = sortparent(nndarr, nnval, nnsyms0)
+    ntpp = sortparent(ntdarr, ntval, nnsyms0)
+    tnpp = sortparent(tndarr, tnval, nnsyms0)
+    ttpp = sortparent(ttdarr, ttval, nnsyms0)
     
     allmap = load(fname+"dmodel.mat", "allmap")
     nmap = allmap(0->nnsyms0,0)
@@ -373,9 +394,20 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
     ttuarr = load(fname+"umodel.mat", "ttuarr")
     ttuval = load(fname+"umodel.mat", "ttuval")
     
-    nnupp = sortparent(nnuarr, nnuval)
-    ntupp = sortparent(ntuarr, ntuval)
-    ttupp = sortparent(ttuarr, ttuval)
+    nnupp = sortparent(nnuarr, nnuval, nnsyms0)
+    ntupp = sortparent(ntuarr, ntuval, nnsyms0)
+    ttupp = sortparent(ttuarr, ttuval, ntsyms0)
+    
+    if (doGPU) {    
+    	dpp = GIMat(nnpp on (nndarr.nrows + (ntpp on (ntdarr.nrows + (tnpp on (tndarr.nrows + ttpp))))))
+    	darr = GIMat(nndarr on ntdarr on tndarr on ttdarr)
+    	bval = GMat(nnval on ntval on tnval on ttval)
+
+    	upp = GIMat(nnupp on (nnuarr.nrows + (ntupp on (ntuarr.nrows + ttupp))))
+    	uarr = GIMat(nnuarr on ntuarr on ttuarr)
+    	uval = GMat(nnuval on ntuval on ttuval)
+    }
+
 
   }
   
@@ -401,7 +433,6 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   	}
   	if (docheck) chkUnary(0)                                 // Run check of unary rules on input words
   	var level = 1
-//  	maxheight = 1
   	while (level < maxheight) {                             // Process this level 
   	  if (doGPU) {
   	  	itree = 0
@@ -450,12 +481,12 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   	  print(", %d" format level)
   	  level = level+1
   	}
-  	if (docheck && doGPU) {
+  	if (doGPU) {
   	  fwordsafter <-- wordsafter
   	  ftreesb4    <-- treesb4
   	  ftreesafter <-- treesafter
   	  fparsetrees <-- parsetrees
-  	  fparsevals <-- parsevals
+  	  fparsevals  <-- parsevals
   	}
   	println("")
   }
@@ -493,9 +524,9 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   def vittree(x0:Int, sentlen:Int):Unit = {
   	var tpos = 2*x0                                                              // Address of the root of this tree
   	var x = x0                                                                   // Address of the current word
-  	while (tpos < 2*(x0+sentlen)-3) {
-  		val height = rparsetrees(0, tpos)                                          // Height of the current tree
-  		val isym = rparsetrees(1, tpos)                                            // Symbol at root of current tree
+  	while (tpos < 2*(x0+sentlen)-1) {
+  		val height = rparsetrees(0, tpos)                                        // Height of the current tree
+  		val isym = rparsetrees(1, tpos)                                          // Symbol at root of current tree
   		if (height > 0) {
   			val (uscore, tsym) = vitunary(isym, rtreesb4, treestep(x,height,sentlen), nnupp, nnuarr, nnuval)
   			rparsetrees(2, tpos) = tsym
@@ -529,7 +560,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   						rmax = rm0
   						vlmax = vl0
   						vrmax = vr0
-  						ylmax = -1
+  						ylmax = 0
   						yrmax = height-y-1
   					}
   				}
@@ -542,7 +573,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   						vlmax = vl0
   						vrmax = vr0
   						ylmax = y
-  						yrmax = -1
+  						yrmax = 0
   					}
   				}
   				if (1 == height) {
@@ -553,8 +584,8 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   						rmax = nnsyms0-3+rm0
   						vlmax = vl0
   						vrmax = vr0
-  						ylmax = -1
-  						yrmax = -1
+  						ylmax = 0
+  						yrmax = 0
   					}
   				}        
   				y += 1
@@ -567,33 +598,43 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   			rparsetrees(1, tpos+2*(ymax+1)) = rmax
   			rparsevals(tpos+2*(ymax+1)) = vrmax     
   		} else {                                                               // height == 0, advance the leaf pointer
-  		  if (height == 0) {                                                   // max symbol was a non-terminal
-  			val (uscore, tsym) = vitunary(isym, fwordsb4, x, ntupp, ntuarr, ntuval)
-  			rparsetrees(2, tpos) = tsym
+  		  if (isym < nnsyms0-3) {                                                   // max symbol was a non-terminal
+  			val (uscore, tsym) = vitunary(isym, fwordsb4, x, ntupp, ntuarr, ntuval) // back down through unary rules
+  			rparsetrees(2, tpos) = tsym+nnsyms0-3
   		  } else {                                                             // max symbol was a terminal
-  		    val (uscore, tsym) = vitunary(isym-nnsyms0+3, fwordsb4, x, ntupp, ntuarr, ntuval)
-  		    rparsetrees(2, tpos) = tsym
+  		    val (uscore, tsym) = vitunary(isym-nnsyms0+3, fwordsb4, x, ttupp, ttuarr, ttuval)  	
+  		    rparsetrees(2, tpos) = tsym+nnsyms0-3
   		  }
   		  x += 1  		  
   		}
   		tpos += 1                                                              // Advance the tree pointer
-    }
+  	}
   }
   
-  def viterbi = {
-    var itree = 0
+  def viterbi(rootsym:Int) = {
+    val rootsym = nnsyms0-2;
     if (docheck) {
+      var itree = 0
       while (itree < ntrees) {                                                // perform viterbi search over each tree
       	val iwbase = iwordptr(itree)
       	var sentlen = iwordptr(itree+1) - iwbase                   
-      	val (sc, isym) = maxi2(rtreesafter(?, iwbase + treestep(0, sentlen-1, sentlen)))  // Get the best root symbol
-      	rparsetrees(1, iwbase*2) = isym.v                                                 // Initialize the root symbol
-      	rparsetrees(0, iwbase*2) = sentlen-1                                              // Initialize root tree height
-      	rparsevals(iwbase*2) = sc                                                         // Root tree score
+      	rparsetrees(1, iwbase*2) = rootsym                                                // Initialize the root symbol
+      	rparsetrees(0, iwbase*2) = sentlen-1                                              // Initialize root tree height                                                       // Root tree score
       	vittree(iwbase, sentlen)
         itree += 1
       }
-      println("val=%d" format rparsetrees(0,0))
+    }
+    if (doGPU) {
+      gwordptr <-- iwordptr
+      gtreeptr <-- itreeptr
+      val err = viterbiGPU(nnsyms0, ntsyms0, nnsyms, ntsyms, ntrees, rootsym,
+                           wordsb4.data, wordsafter.data, treesb4.data, treesafter.data, 
+                           gwordptr.data, gtreeptr.data, parsetrees.data, parsevals.data, 
+                           dpp.data, darr.data, bval.data, darr.nrows,
+                           upp.data, uarr.data, uval.data, uarr.nrows)
+      if (err != 0) throw new RuntimeException("CUDA error in viterbiGPU")
+      fparsetrees <-- parsetrees
+      fparsevals <-- parsevals
     }
   }
 
@@ -602,30 +643,17 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
 import edu.berkeley.nlp.PCFGLA._
 
 object BIDParser {
-  
-  def defaults = {
-    runParser("c:\\data\\Grammar\\eng_sm6.gr",
-        "c:\\data\\wsj\\wsj\\",
-        "c:\\data\\Grammar\\",
-        20,
-        4)
+   
+  def main(args:Array[String]):Unit = {
+		  run(args(0).toInt, args(1).toInt, args(2).toBoolean, args(3).toBoolean, args(4), args(5), args(6))
   }
-  
-	def main(args:Array[String]):Unit = {
-		val berkeleyGrammar = args(0)
-		val cpath = args(1)
-		val sympath = args(2)
-		var maxlen = 36
-		var maxsents = 100000
-		if (args.size > 3) maxlen = args(3).toInt
-		if (args.size > 4) maxsents = args(4).toInt
-		runParser(args(0), args(1), args(2), maxlen, maxsents)
-	}
 
-  def runParser(grammarPath:String, corpusPath:String, symbolsPath:String, maxlen:Int, maxsents:Int) = {
+  def run(maxlen:Int=30, maxsents:Int=10000, docheck:Boolean=false, doGPU:Boolean=true,
+      grammarPath:String="c:\\data\\Grammar\\eng_sm6.gr", 
+      corpusPath:String="c:\\data\\wsj\\wsj\\", 
+      symbolsPath:String="c:\\data\\Grammar\\") = {
   	val corpus: Corpus = new Corpus(corpusPath, TreeBankType.WSJ, 1.0, true)
-    val testTrees = corpus.getDevTestingTrees
-  // testTrees = corpus.getTestTrees
+    val testTrees = corpus.getFinalTestingTrees
 
     val eval = new EnglishPennTreebankParseEvaluator.LabeledConstituentEval[String](new util.HashSet[String](util.Arrays.asList("ROOT","PSEUDO")),
     		new util.HashSet(util.Arrays.asList("''", "``", ".", ":", ",")))
@@ -644,8 +672,6 @@ object BIDParser {
 
 
 	  val vitParse = true
-	  val parser = new CoarseToFineMaxRuleParser(grammar, lexicon, 1.0, -1, true, false, false, false, false, false, false);
-  //parser.binarization = pData.getBinarization
 
 	  val sdict:IndexedSeq[String] =(
 	  		Source.fromFile(symbolsPath+"fulldict.txt")
@@ -668,6 +694,7 @@ object BIDParser {
 	  }
 	  
 	  val nnsyms = sdict.indexOf("EX_1")+1
+	  val rootpos = sdict.indexOf("ROOT_0")
 	  // Overlap by three symbols, since ROOT_0, EX_0 and EX_1 are both terminal and non-terminal 
 	  val ntsyms = sdict.length - nnsyms + 3
 	  val (ffrac, gmem, gtmem) = GPUmem
@@ -677,9 +704,10 @@ object BIDParser {
 	  val stride = 8192
 	  val nthreads = 1024
 
-	  var ts:TreeStore = new TreeStore(nnsyms, ntsyms, maxwords, maxnodes, maxtrees, maxlen, stride, nthreads, cdict)
+	  var ts:TreeStore = new TreeStore(nnsyms, ntsyms, maxwords, maxnodes, maxtrees, maxlen, stride, nthreads, cdict, docheck, doGPU)
 	  ts.clearState
 	  ts.loadrules(symbolsPath, nnsyms, ntsyms)
+	  ts.createKstates
 	  val (ffrac2, gmem2, gtmem2) = GPUmem
 	  println("frac=%g, abs=%d" format (ffrac2, gmem2))
 
@@ -691,17 +719,21 @@ object BIDParser {
 	  var nnodes = 0
 	  var done = false
 	  
-	  while(testTreesIterator.hasNext && nsentences < maxsents) {
+	  ts.grammar = grammar
+	  ts.parser = new CoarseToFineMaxRuleParser(grammar, lexicon, 1.0, -1, true, false, false, false, false, false, false);
+  //parser.binarization = pData.getBinarization
+	  
+	  while(testTreesIterator.hasNext && !done) {
 	  	val testTree = testTreesIterator.next()
 	  	val testSentence = testTree.getYield
 	  	val len = testSentence.size
 	  	if (len <= maxlen) {
-	  		if (nwords + len > maxwords || nnodes + len*(len+1)/2 > maxnodes) {
+	  		if (nwords + len > maxwords || nnodes + len*(len+1)/2 > maxnodes || nsentences >= maxsents) {
 	  		  done = true
 	  		} else {
 
-	  		// pos -> coarse Sym -> refinement -> score
-	  			val scores: mutable.Buffer[Array[Array[Double]]] = parser.getTagScores(testSentence).asScala
+	  			// pos -> coarse Sym -> refinement -> score
+	  			val scores: mutable.Buffer[Array[Array[Double]]] = ts.parser.getTagScores(testSentence).asScala
 	  			val ssc = FMat(ntsyms, scores.length)
 	  			for ( (score,pos) <- scores.zipWithIndex) {
 	  				for(i <- 0 until score.length if score(i) != null; j <- 0 until score(i).length) {
@@ -719,7 +751,7 @@ object BIDParser {
 	  flip
 //	  try {
 	  	ts.innerscores
-	  	ts.viterbi
+	  	ts.viterbi(rootpos)
 //	  } catch {
 //	    case e:Exception => println("\nException thrown, exiting "+e.toString)
 //	  }
@@ -730,85 +762,8 @@ object BIDParser {
  	  (ts, testTrees)
   }
   
-  private def doParse(ts: TreeStore, goldTrees: IndexedSeq[Tree[String]]) = {
-    val out = new ArrayBuffer[Tree[String]]
-    val nsyms = ts.nnsyms
-    ts.innerscores()
-    // copy in the matrices
-    val ts.OutData(wordsb4, wordsAfter, treesb4, treesAfter) = ts.copyOut
-    for(s <- 0 until ts.ntrees) {
-      val wordoffset = ts.iwordptr(s, 0)
-      val nodeoffset = ts.itreeptr(s, 0)
-      val len = goldTrees(s).size()
-      def getL(beg: Int, end: Int, sym: Int) = {
-        if(beg == end + 1)
-          wordsb4(sym, wordoffset + beg)
-        else
-          treesb4(sym, ts.treepos(nodeoffset, beg, end, len))
-      }
-
-      def getU(beg: Int, end: Int, sym: Int) = {
-         if(beg == end + 1)
-          wordsAfter(sym, wordoffset + beg)
-        else
-          treesAfter(sym, ts.treepos(nodeoffset, beg, end, len))
-      }
-    }
-  }
 } 
 
-/*
-
-object TestParseKernel {
-  
-  def test1(args:Array[String]) = {
-    val ddarr:DMat = load("\\code\\Parser\\grammar\\binrules.mat","nndarr")
-    val diassign:DMat = load("\\code\\Parser\\grammar\\binrules.mat","fassign")
-    val darr = IMat(ddarr)
-    val iassign = IMat(diassign)
-    val lens = icol(7,2,2)
-    val nt = maxi(darr(?,0)).v
-    val nblks = (lens(0)*lens(1)*lens(2)).v
-    val indx1 = iassign(?,2)-1 + lens(2)*(iassign(?,1)-1 + lens(1)*(iassign(?,0)-1))
-
-    val bcounts = accum(indx1,1,nblks)
-    val prcounts = accum(((darr(?,0)-1) \ indx1), iones(size(darr,1),1), nt, nblks)
-    val lcounts = accum(((darr(?,1)-1) \ indx1), iones(size(darr,1),1), nt, nblks)
-    val rcounts = accum(((darr(?,2)-1) \ indx1), iones(size(darr,1),1), nt, nblks)
-    val prpos = prcounts > 0
-    val lpos = lcounts > 0
-    val rpos = rcounts > 0
-    
-    iassign
-  }
-  
-  
-  def test2(args:Array[String]) = {
-    val nsyms = 512
-    val stride = 8192
-    val nrules = 373375
-    val pars = grand(nsyms, stride)
-    val left = grand(nsyms, stride)
-    val right = grand(nsyms, stride)
-    val scales = grand(stride, 1)
-    val nreps = args(0).toInt
-    tic
-    var i = 0
-    while (i < nreps) {
-      nnrules(pars.data, left.data, right.data, scales.data, stride, 1024)
-      i += 1
-    }
-    val tt = toc
-    println("kernel time=%f, gflops=%f" format (tt, 3L*stride*nrules*nreps/tt/1e9))
-  }
-  
-  def main(args:Array[String]) {
-    Mat.checkCUDA
-    test2(args)
-  }
-}
-
-*/
 
 
 
