@@ -193,7 +193,7 @@ typedef struct dcontents {
 } dcontents_t;
   
 __device__ void __vitunary(int isym, double *dmax, float *lscores, int nsyms,
-			   float *lmat, int tti, int *upp, int *uarr, float *uval, int nurules)
+		                   float *lmat, int tti, int *upp, int *uarr, float *uval, int nurules)
 {
   double dtest;
   dcontents_t *dt = (dcontents_t *)&dtest;
@@ -214,7 +214,11 @@ __device__ void __vitunary(int isym, double *dmax, float *lscores, int nsyms,
   __syncthreads();
   for (int step = 1; step < NVITTHREADS; step *= 2) {                   // Combine max values across threads in a tree
     if (threadIdx.x % (2*step) == 0) {
-      dmax[threadIdx.x] = max(dmax[threadIdx.x+step], dmax[threadIdx.x]);
+      dtest = dmax[threadIdx.x+step];
+    }
+    __syncthreads();
+    if (threadIdx.x % (2*step) == 0) {
+      dmax[threadIdx.x] = max(dtest, dmax[threadIdx.x]);
     }
     __syncthreads();
   }
@@ -227,10 +231,10 @@ __device__ void __vitbinary(int isym, double *dmax, maxfields_t *maxf, int y,
 {
   double dtest;
   dcontents_t *dt = (dcontents_t *)&dtest;
+  __syncthreads();
   double oldmax = dmax[0];
   dt->iv = 0;
   dt->fv = MINVAL;
-  __syncthreads();
   for (int i = threadIdx.x; i < nlsyms; i += blockDim.x) {
     lscores[i] = lmat[lbase + i];
   }
@@ -249,7 +253,11 @@ __device__ void __vitbinary(int isym, double *dmax, maxfields_t *maxf, int y,
   __syncthreads();
   for (int step = 1; step < NVITTHREADS; step *= 2) {
     if (threadIdx.x % (2*step) == 0) {
-      dmax[threadIdx.x] = max(dmax[threadIdx.x+step], dmax[threadIdx.x]);
+      dtest = dmax[threadIdx.x+step];
+    }
+    __syncthreads();
+    if (threadIdx.x % (2*step) == 0) {
+      dmax[threadIdx.x] = max(dtest, dmax[threadIdx.x]);
     }
     __syncthreads();
   }
@@ -282,79 +290,87 @@ __global__ void __viterbi(int nnsyms0, int ntsyms0, int nnsyms, int ntsyms, int 
 
   const int prows = 3;
   int noff = nnsyms0 - 3;
-  int x0 = iwordptr[blockIdx.x];
-  int sentlen = iwordptr[blockIdx.x+1] - x0;
-  int x = x0;                                             // Word position
-  int tpos = 2*x0;                                        // Parse tree position
-  int pti = prows*tpos;
-  parsetrees[pti] = sentlen-1;                            // Init height of the main tree
-  parsetrees[1+pti] = isym;                               // Symbol at root of main tree
-  dcontents_t *dm0 = (dcontents_t *)&dmax[0];
-  while (tpos < 2*(x0+sentlen)-1) {
-    pti = prows*tpos;
-    int height = parsetrees[pti];                         // Height of the current tree
-    isym = parsetrees[1+pti];                             // Symbol at root of current tree
-    int tti = treestep(x,height,sentlen);
-    if (threadIdx.x == 0) {                               // Clear the maximum var
-      dm0->iv = 0;                                        // Low order word holds the rule number (use a double to hold value + rule number)
-      dm0->fv = MINVAL;                                   // High order word holds the value
+  for (int bid = blockIdx.x; bid < ntrees; bid += gridDim.x) {
+    int x0 = iwordptr[bid];
+    int t0 = itreeptr[bid];
+    int sentlen = iwordptr[bid] - x0;
+    int x = 0;                                              // Word position
+    int tpos = 2*x0;                                        // Parse tree position
+    int pti = prows*tpos;
+    dcontents_t *dm0 = (dcontents_t *)&dmax[0];
+    if (threadIdx.x == 0) {
+      parsetrees[pti] = sentlen-1;                            // Init height of the main tree
+      parsetrees[1+pti] = isym;                               // Symbol at root of main tree
     }
-    if (height > 0) {
-      __vitunary(isym, dmax, lscores, nnsyms0, treesb4, tti*nnsyms, upp, uarr, uval, nurules); // Pull down the root symbol through unary rules
-      isym = dm0->iv;
-      if (threadIdx.x == 0) {
-	parsetrees[2+pti] = isym;                         // Save the result in parsetrees[2,pti]
-	maxf.l = -1;                                      // maxf holds all the metadata for the best rule
-	maxf.r = -1;
-	maxf.y = -1;
-	maxf.vl = MINVAL;
-	maxf.vr = MINVAL;
-	maxf.v = MINVAL;
-	dm0->iv = 0;
-	dm0->fv = MINVAL;
+    while (tpos < 2*(x0+sentlen)-1) {
+      __syncthreads();
+      pti = prows*tpos;
+      int height = parsetrees[pti];                         // Height of the current tree
+      isym = parsetrees[1+pti];                             // Symbol at root of current tree
+      int tti = t0 + treestep(x,height,sentlen);
+      if (threadIdx.x == 0) {                               // Clear the maximum var
+        dm0->iv = 0;                                        // Low order word holds the rule number (use a double to hold value + rule number)
+        dm0->fv = MINVAL;                                   // High order word holds the value
+      }
+      __syncthreads();		
+      if (height > 0) {
+        __vitunary(isym, dmax, lscores, nnsyms0, treesb4, tti*nnsyms, upp, uarr, uval, nurules); // Pull down the root symbol through unary rules
+        isym = dm0->iv;
+        __syncthreads();
+        if (threadIdx.x == 0) {
+          parsetrees[2+pti] = isym;                         // Save the result in parsetrees[2,pti]
+          maxf.l = -1;                                      // maxf holds all the metadata for the best rule
+          maxf.r = -1;
+          maxf.y = -1;
+          maxf.vl = MINVAL;
+          maxf.vr = MINVAL;
+          maxf.v = MINVAL;
+          dm0->iv = 0;
+          dm0->fv = MINVAL;
+        }
+        __syncthreads();
+        for (int y = 0; y < height; y++) {                  // Process all splits for this node
+          int ts1 = nnsyms*(t0+treestep(x, y, sentlen));    // Array addresses of children
+          int ts2 = nnsyms*(t0+treestep(x+y+1, height-y-1, sentlen));
+          int x1 = ntsyms*(x+x0);
+          int x2 = ntsyms*(x+x0+y+1);
+
+          __vitbinary(isym, dmax, &maxf, y, lscores, nnsyms0, rscores, nnsyms0, 
+                      treesafter, ts1, 0, treesafter, ts2, 0, pp, darr, bval, nbrules);
+          if (y == 0) {
+            __vitbinary(isym, dmax, &maxf, y, lscores, ntsyms0, rscores, nnsyms0, 
+                        wordsafter, x1, noff, treesafter, ts2, 0, pp+2*(nnsyms0+1), darr, bval, nbrules);
+          }
+          if (y == height-1) {
+            __vitbinary(isym, dmax, &maxf, y, lscores, nnsyms0, rscores, ntsyms0, 
+                        treesafter, ts1, 0, wordsafter, x2, noff, pp+(nnsyms0+1), darr, bval, nbrules);
+          }
+          if (height == 1) {
+            __vitbinary(isym, dmax, &maxf, y, lscores, ntsyms0, rscores, ntsyms0, 
+                        wordsafter, x1, noff, wordsafter, x2, noff, pp+3*(nnsyms0+1), darr, bval, nbrules);
+          }
+        }  			
+        if (threadIdx.x == 0) {                            // Update parsetree data. 
+          parsetrees[prows*(tpos+1)] = maxf.y;             // Left child (next position in tree array) height
+          parsetrees[1+prows*(tpos+1)] = maxf.l;           // Left child symbol
+          parsevals[tpos+1] = maxf.vl;                     // Left child score
+          int nexti = tpos+2*(maxf.y+1);                   // Address of right child
+          parsetrees[prows*nexti] = height - maxf.y - 1;   // Right child height
+          parsetrees[1+prows*nexti] = maxf.r;              // Right child symbol
+          parsevals[nexti] = maxf.vr;                      // Right child score
+        }
+      } else {                                             // height == 0, advance the leaf pointer
+        if (isym < nnsyms0-3) {                              // max symbol was a non-terminal
+          __vitunary(isym, dmax, lscores, ntsyms0, wordsb4, (x+x0)*ntsyms, upp+(nnsyms0+1), uarr, uval, nurules); // back down through unary rules
+        } else {                                           // max symbol was a terminal
+          __vitunary(isym-noff, dmax, lscores, ntsyms0, wordsb4, (x+x0)*ntsyms, upp+2*(nnsyms0+1), uarr, uval, nurules); 
+        }
+        if (threadIdx.x == 0) parsetrees[2+prows*tpos] = (dm0->iv) + noff; 
+        x++;                                               // We consumed a non-terminal, so step the word ptr
       }
       __syncthreads();
-      for (int y = 0; y < height; y++) {                  // Process all splits for this node
-	int ts1 = nnsyms*treestep(x, y, sentlen);         // Array addresses of children
-	int ts2 = nnsyms*treestep(x+y+1, height-y-1, sentlen);
-	int x1 = ntsyms*x;
-	int x2 = ntsyms*(x+y+1);
-
-	__vitbinary(isym, dmax, &maxf, y, lscores, nnsyms0, rscores, nnsyms0, 
-		    treesafter, ts1, 0, treesafter, ts2, 0, pp, darr, bval, nbrules);
-	if (y == 0) {
-	  __vitbinary(isym, dmax, &maxf, y, lscores, ntsyms0, rscores, nnsyms0, 
-		      wordsafter, x1, noff, treesafter, ts2, 0, pp+2*(nnsyms0+1), darr, bval, nbrules);
-	}
-	if (y == height-1) {
-	  __vitbinary(isym, dmax, &maxf, y, lscores, nnsyms0, rscores, ntsyms0, 
-		      treesafter, ts1, 0, wordsafter, x2, noff, pp+(nnsyms0+1), darr, bval, nbrules);
-	}
-	if (height == 1) {
-	  __vitbinary(isym, dmax, &maxf, y, lscores, ntsyms0, rscores, ntsyms0, 
-		      wordsafter, x1, noff, wordsafter, x2, noff, pp+3*(nnsyms0+1), darr, bval, nbrules);
-	}
-      }  					
-      if (threadIdx.x == 0) {                            // Update parsetree data. 
-	parsetrees[prows*(tpos+1)] = maxf.y;             // Left child (next position in tree array) height
-	parsetrees[1+prows*(tpos+1)] = maxf.l;           // Left child symbol
-	parsevals[tpos+1] = maxf.vl;                     // Left child score
-	int nexti = tpos+2*(maxf.y+1);                   // Address of right child
-	parsetrees[prows*nexti] = height - maxf.y - 1;   // Right child height
-	parsetrees[1+prows*nexti] = maxf.r;              // Right child symbol
-	parsevals[nexti] = maxf.vr;                      // Right child score
-      }
-    } else {                                             // height == 0, advance the leaf pointer
-      if (isym < nnsyms0-3) {                              // max symbol was a non-terminal
-	__vitunary(isym, dmax, lscores, ntsyms0, wordsb4, x*ntsyms, upp+(nnsyms0+1), uarr, uval, nurules);   // back down through unary rules
-      } else {                                           // max symbol was a terminal
-      __vitunary(isym-noff, dmax, lscores, ntsyms0, wordsb4, x*ntsyms, upp+2*(nnsyms0+1), uarr, uval, nurules); 
-      }
-      if (threadIdx.x == 0) parsetrees[2+prows*tpos] = (dm0->iv) + noff; 
-      x++;                                               // We consumed a non-terminal, so step the word ptr
+      tpos++;                                              // Advance the tree pointer
     }
-  __syncthreads();
-  tpos++;                                              // Advance the tree pointer
   }
 }
 
@@ -365,7 +381,9 @@ int viterbi(int nnsyms0, int ntsyms0, int nnsyms, int ntsyms, int ntrees, int is
 	    int *pp, int *darr, float *bval, int nbrules,
 	    int *upp, int *uarr, float *uval, int nurules) {
 
-  __viterbi<<<ntrees,NVITTHREADS>>>(nnsyms0, ntsyms0, nnsyms, ntsyms, ntrees, isym,
+  int nblocks = min(256,ntrees);
+
+  __viterbi<<<nblocks,NVITTHREADS>>>(nnsyms0, ntsyms0, nnsyms, ntsyms, ntrees, isym,
 				    wordsb4, wordsafter, treesb4, treesafter,
 				    iwordptr, itreeptr, parsetrees, parsevals,
 				    pp, darr, bval, nbrules,
