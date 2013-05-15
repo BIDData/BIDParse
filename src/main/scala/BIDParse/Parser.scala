@@ -92,6 +92,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   var allmap:CSMat = null
   var nmap:CSMat = null
   var tmap:CSMat = null
+  var ssmap:CSMat = null
   
   // Buffers (transposed relative to tree store) for binary rule application
   val leftbuff     = if (doGPU) GMat(stride, ntsyms) else null       // Left score buffer       
@@ -612,7 +613,6 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   }
   
   def viterbi(rootsym:Int) = {
-    val rootsym = nnsyms0-2;
     if (docheck) {
       var itree = 0
       while (itree < ntrees) {                                                // perform viterbi search over each tree
@@ -637,7 +637,6 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
       fparsevals <-- parsevals
     }
   }
-
 } 
 
 import edu.berkeley.nlp.PCFGLA._
@@ -675,22 +674,16 @@ object BIDParser {
 	  val cdict:CSMat = load(symbolsPath+"dmodel.mat", "allmap")
 	  val sdict = cdict.data
 
-	 /* val sdict:IndexedSeq[String] =(
-	  		Source.fromFile(symbolsPath+"fulldict.txt")
-	  		.getLines()
-	  		.map(_.trim)
-	  		.toIndexedSeq
-	  )
-	  val cdict = CSMat(sdict.length,1)
-	  for (i <- 0 until sdict.length) {cdict(i,0) = sdict(i)} */
-
 	  val substateIds = Array.ofDim[Array[Int]](grammar.numStates)
+	  val ssmap = CSMat(cdict.length,1)
 	  var id = 0
 	  for(i <- 0 until grammar.numSubStates.length) {
 	  	substateIds(i) = new Array[Int](grammar.numSubStates(i))
 	  	for(j <- 0 until grammar.numSubStates(i)) {
 	  		val sym = grammar.getTagNumberer.`object`(i) + "_" + j
-	  		substateIds(i)(j) = sdict.indexOf(sym)
+	  		val ix = sdict.indexOf(sym)
+	  		substateIds(i)(j) = ix
+	  		ssmap(ix) = grammar.getTagNumberer.`object`(i).toString
 	  		id += 1
 	  	}
 	  }
@@ -723,17 +716,22 @@ object BIDParser {
 	  
 	  ts.grammar = grammar
 	  ts.parser = new CoarseToFineMaxRuleParser(grammar, lexicon, 1.0, -1, true, false, false, false, false, false, false);
+	  ts.ssmap = ssmap
+	  val tsents = new Array[CSMat](testTrees.size)
   //parser.binarization = pData.getBinarization
-	  
+	  	val testTree = testTreesIterator.next()	  
 	  while(testTreesIterator.hasNext && !done) {
-	  	val testTree = testTreesIterator.next()
+
 	  	val testSentence = testTree.getYield
 	  	val len = testSentence.size
 	  	if (len <= maxlen) {
 	  		if (nwords + len > maxwords || nnodes + len*(len+1)/2 > maxnodes || nsentences >= maxsents) {
 	  		  done = true
 	  		} else {
-
+	  		  val ctmp = CSMat(testSentence.size,1)
+	  			tsents(nsentences) = ctmp
+	  			var tsiter = testSentence.iterator
+	  			for (i <- 0 until testSentence.size)  {ctmp(i) = tsiter.next}
 	  			// pos -> coarse Sym -> refinement -> score
 	  			val scores: mutable.Buffer[Array[Array[Double]]] = ts.parser.getTagScores(testSentence).asScala
 	  			val ssc = FMat(ntsyms, scores.length)
@@ -761,9 +759,34 @@ object BIDParser {
 	  val tt = ff._2
 	  println("maxlen=%d, nsentences=%d, nwords=%d, nnodes=%d, maxsents=%d, maxwords=%d, maxnodes=%d\ntime= %f secs, %f sents/sec, %f gflops" format 
 	  		(maxlen, nsentences, nwords, nnodes, maxtrees, maxwords, maxnodes, tt, nsentences/tt, ff._1))
- 	  (ts, testTrees)
+ 	  (ts, testTrees, tsents)
   }
   
+  def printTree(itree:Int, ts:TreeStore, tt:Array[CSMat]) = {
+    val iword = ts.iwordptr(itree)
+    printSubTree(itree, 2*iword, iword, ts.fparsetrees, ts.fparsevals, ts, tt)    
+  }
+  
+  def printRTree(itree:Int, ts:TreeStore, tt:Array[CSMat]) = {
+    val iword = ts.iwordptr(itree)
+    printSubTree(itree, 2*iword, iword, ts.rparsetrees, ts.rparsevals, ts, tt)    
+  }
+  
+  def printSubTree(itree:Int, inode:Int, iword:Int, trees:IMat, tvals:FMat, ts:TreeStore, tt:Array[CSMat]):Unit = {
+    val height = trees(0, inode)
+    val isym = trees(1, inode)
+    print("(")
+    print(ts.ssmap(isym)+" ")
+    if (height > 0) {
+      printSubTree(itree, inode+1, iword, trees, tvals, ts, tt)
+      print(" ")
+      val lheight = trees(0, inode+1)
+      printSubTree(itree, inode+2*lheight+2, iword+lheight+1, trees, tvals, ts, tt)
+    } else {
+      print(tt(itree)(iword-ts.iwordptr(itree)))
+    }
+    print(")")
+  }
 } 
 
 
