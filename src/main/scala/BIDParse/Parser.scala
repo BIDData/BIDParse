@@ -488,6 +488,7 @@ class TreeStore(val nnsyms0:Int, val ntsyms0:Int, val maxwords:Int, val maxnodes
   	  ftreesafter <-- treesafter
   	  fparsetrees <-- parsetrees
   	  fparsevals  <-- parsevals
+
   	}
   	println("")
   }

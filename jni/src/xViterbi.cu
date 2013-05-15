@@ -192,7 +192,7 @@ typedef struct dcontents {
   float fv;
 } dcontents_t;
   
-__device__ void __vitunary(int isym, double *dmax, float *lscores, int nsyms,
+__device__ inline void __vitunary(int isym, double *dmax, float *lscores, int nsyms,
 		                   float *lmat, int tti, int *upp, int *uarr, float *uval, int nurules)
 {
   double dtest;
@@ -224,7 +224,7 @@ __device__ void __vitunary(int isym, double *dmax, float *lscores, int nsyms,
   }
 }
 
-__device__ void __vitbinary(int isym, double *dmax, maxfields_t *maxf, int y, 
+__device__ inline void __vitbinary(int isym, double *dmax, maxfields_t *maxf, int y, 
 			    float *lscores, int nlsyms, float *rscores, int nrsyms,
 			    float *lmat, int lbase, int lsymoff, float *rmat, int rbase, int rsymoff, 
 			    int *pp, int *darr, float *bval, int nbrules)
@@ -292,8 +292,8 @@ __global__ void __viterbi(int nnsyms0, int ntsyms0, int nnsyms, int ntsyms, int 
   int noff = nnsyms0 - 3;
   for (int bid = blockIdx.x; bid < ntrees; bid += gridDim.x) {
     int x0 = iwordptr[bid];
+    int sentlen = iwordptr[bid+1] - x0;
     int t0 = itreeptr[bid];
-    int sentlen = iwordptr[bid] - x0;
     int x = 0;                                              // Word position
     int tpos = 2*x0;                                        // Parse tree position
     int pti = prows*tpos;
