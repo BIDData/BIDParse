@@ -84,12 +84,12 @@ elif [ "$OS" = "linux" ] ; then
         GCC="g++"
         NVCC="nvcc"
         NVCCFLAGS="-c -I`pwd` -I`pwd`/rules -use_fast_math -gencode arch=compute_30,code=sm_30 \
-          --machine 64  -Xcompiler \"-fPIC -c -O2 -g -DNDEBUG\""
+          --machine 64  -Xptxas -v -Xcompiler \"-fPIC -c -O2 -g -DNDEBUG\""
         SUBLIB=linux64
 	OBJ="o"
 	OUTFLG="-o "
 	CPPFLAGS="-fPIC -c -O2 -DNDEBUG  -I$JAVA_HOME/include -I$JAVA_HOME/include/linux \
-                  -I$JCUDA_HOME/CommonJNI/src -I$CUDA_HOME/include"
+                  -I$JCUDA_HOME/CommonJNI/src -I$CUDA_HOME/include  -I`pwd` -I`pwd`/rules"
 	CFLAGS="-fPIC -c -O2 -openmp -std c99 -DNDEBUG -I$JAVA_HOME/include -I$JAVA_HOME/include/linux \
                   -I$MKL_ROOT/include -I$MKL_ROOT/include/intel64/lp64"
 	LB="ar rc"    
@@ -127,7 +127,7 @@ elif [ "$OS" = "windows" ] ; then
 	OUTFLG="/OUT:"
 	CPPFLAGS="/c /MT /DNDEBUG /O2 /Qstd=c99 /Qopenmp $CFLAGS"    # static linking
         NVCCFLAGS="-c -I`pwd` -I`pwd`/rules -use_fast_math -gencode arch=compute_30,code=sm_30 \
-          --machine 64  -Xcompiler \"/EHsc /W3 /nologo /O2 /Zi  /MT\""
+          --machine 64  -Xptxas -v -Xcompiler \"/EHsc /W3 /nologo /O2 /Zi  /MT\""
 	CFLAGS="/c /MT /DNDEBUG /O2 /Qstd=c99 /Qopenmp $CFLAGS"    # static linking
 	LB="lib"    
 	LD="link"

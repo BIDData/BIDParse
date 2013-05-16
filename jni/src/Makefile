@@ -12,14 +12,15 @@ $(LIBPREPEND)jniparse$(LIBAPPEND): $(OBJS)
 	$(LD) $(LDFLAGS) $(OBJS) $(CUDA_LIBS) $(OUTFLG)$@
 
 bin/%.$(OBJ) : %.c
-	icl $(CPPFLAGS) $(CFLAGS) $(OUTFLG)$*.$(OBJ) $*.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(OUTFLG)bin/$*.$(OBJ) $*.c
 
 bin/%.$(OBJ) : %.cpp
-	icl $(CPPFLAGS) $(CFLAGS) $(OUTFLG)$*.$(OBJ) $*.cpp
+	$(GCC) $(CPPFLAGS) $(OUTFLG)bin/$*.$(OBJ) $*.cpp
 
 bin/%.$(OBJ) : %.cu testSparse.h
 	$(NVCC) $(NVCCFLAGS) -o bin/$*.$(OBJ) $*.cu
 
+# L1 caching disabled:
 bin/%.$(OBJ) : rules/%.cu testSparse.h
 	$(NVCC) $(NVCCFLAGS) -Xptxas -dlcm=cg -o bin/$*.$(OBJ) rules/$*.cu
 
