@@ -1,24 +1,24 @@
-CC=icc
-GCC=g++
+CC=icl
+GCC=icl
 NVCC=nvcc
-NVCCFLAGS=-c -I/home/jfc/code/BIDParse/jni/src -I/home/jfc/code/BIDParse/jni/src/rules -use_fast_math -gencode arch=compute_30,code=sm_30           --machine 64  -Xptxas -v -Xcompiler "-fPIC -c -O2 -g -DNDEBUG"
-SUBLIB=linux64
-OBJ=o
-OUTFLG=-o 
-CPPFLAGS=-fPIC -c -O2 -DNDEBUG  -I/usr/java/default/include -I/usr/java/default/include/linux                   -I/home/jfc/code/BIDParse/jni/src/../../../JCUDA5/CommonJNI/src -I/usr/local/cuda/include  -I/home/jfc/code/BIDParse/jni/src -I/home/jfc/code/BIDParse/jni/src/rules
-CFLAGS=-fPIC -c -O2 -openmp -std c99 -DNDEBUG -I/usr/java/default/include -I/usr/java/default/include/linux                   -I/opt/intel/mkl/include -I/opt/intel/mkl/include/intel64/lp64
-LB=ar rc
-LD=icc -shared -static-intel
-GLD=g++ -shared
-LDFLAGS=
-LIBPREPEND=lib
-LIBAPPEND=.so
+NVCCFLAGS=-c -I/code/BIDParse/jni/src -I/code/BIDParse/jni/src/rules -use_fast_math -gencode arch=compute_30,code=sm_30           --machine 64  -Xptxas -v -Xcompiler "/EHsc /W3 /nologo /O2 /Zi  /MT"
+SUBLIB=win64
+OBJ=obj
+OUTFLG=/OUT:
+CPPFLAGS=/c /MT /DNDEBUG /O2 /Qstd=c99 /Qopenmp 
+CFLAGS=/c /MT /DNDEBUG /O2 /Qstd=c99 /Qopenmp 
+LB=lib
+LD=link
+GLD=link
+LDFLAGS=/DLL /MACHINE:AMD64 
+LIBPREPEND=
+LIBAPPEND=.dll
 LAPACK_INCLUDES=
-MKL_LIBS=-L/usr/java/default/lib -L/opt/intel/composerxe/lib/intel64             /opt/intel/mkl/lib/intel64/libmkl_intel_lp64.a -Wl,--start-group              /opt/intel/mkl/lib/intel64/libmkl_intel_thread.a /opt/intel/mkl/lib/intel64/libmkl_core.a             -Wl,--end-group -liomp5 -lpthread -lm
-CUDA_LIBS=-L/usr/local/cuda/lib64 -L/home/jfc/code/BIDParse/jni/src/../../../JCUDA5/lib -lcudart -lCommonJNI
-FORTRAN_LIBS=-lgfortran
-FC=gfortran
-FFLAGS=-fPIC -c -O2 -openmp -std c99 -DNDEBUG -I/usr/java/default/include -I/usr/java/default/include/linux                   -I/opt/intel/mkl/include -I/opt/intel/mkl/include/intel64/lp64
-LIB=
-INCLUDE=
-JCUDA_COMMON=/home/jfc/code/BIDParse/jni/src/../../../JCUDA5/CommonJNI/src
+MKL_LIBS=mkl_intel_lp64.lib mkl_intel_thread.lib mkl_core.lib libiomp5md.lib
+CUDA_LIBS=cudart.lib CommonJNI.lib
+FORTRAN_LIBS=
+FC=ifort
+FFLAGS=-c 
+LIB=c:/Intel/MKL/mkl/lib/intel64;c:/Intel/MKL/compiler/lib/intel64;C:/Progra~1/Java/jdk1.6.0_29/lib;C:/Progra~1/NVIDIA~2/CUDA/v5.0/lib/x64;/code/JCUDA5/lib;C:\Program Files (x86)\Intel\Composer XE 2011 SP1\compiler\lib;C:\Program Files (x86)\Intel\Composer XE 2011 SP1\compiler\lib\intel64;C:\Program Files (x86)\Microsoft Visual Studio 9.0\VC\ATLMFC\LIB\amd64;C:\Program Files (x86)\Microsoft Visual Studio 9.0\VC\LIB\amd64;C:\Program Files\\Microsoft SDKs\Windows\v6.0A\lib\x64;
+INCLUDE=C:/Progra~1/Java/jdk1.6.0_29/include;C:/Progra~1/Java/jdk1.6.0_29/include/win32;c:/Intel/MKL/mkl/include;/code/JCUDA5/CommonJNI/src;C:/Progra~1/NVIDIA~2/CUDA/v5.0/include;C:\Program Files (x86)\Intel\Composer XE 2011 SP1\compiler\include;C:\Program Files (x86)\Intel\Composer XE 2011 SP1\compiler\include\intel64;C:\Program Files (x86)\Microsoft Visual Studio 9.0\VC\ATLMFC\INCLUDE;C:\Program Files (x86)\Microsoft Visual Studio 9.0\VC\INCLUDE;C:\Program Files\\Microsoft SDKs\Windows\v6.0A\include;;/code/BIDParse/jni/src;/code/BIDParse/jni/src/rules
+JCUDA_COMMON=/code/JCUDA5/CommonJNI/src
