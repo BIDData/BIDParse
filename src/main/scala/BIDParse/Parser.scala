@@ -19,6 +19,8 @@ import scala.collection.JavaConverters._
 import edu.berkeley.nlp.parser.EnglishPennTreebankParseEvaluator
 import java.util
 import edu.berkeley.nlp.util.Numberer
+import scala.actors.Actor
+import scala.collection.mutable.ListBuffer
 import collection.mutable
 import collection.mutable.ArrayBuffer
 import io.Source
@@ -673,15 +675,15 @@ import edu.berkeley.nlp.PCFGLA._
 object BIDParser {
    
   def main(args:Array[String]):Unit = {
-		  run(args(0).toInt, args(1).toInt, args(2).toBoolean, args(3).toBoolean, args(4).toBoolean, args(5), args(6), args(7))
+    runParser(args(0).toInt, args(1).toInt, args(2).toBoolean, args(3).toBoolean, args(4).toBoolean, args(5).toBoolean, args(6), args(7), args(8))
   }
 
-  def run(maxlen:Int=30, maxsents:Int=10000, docheck:Boolean=false, doGPU:Boolean=true, crosswire:Boolean=false,
+  def runParser(maxlen:Int=30, maxsents:Int=10000, docheck:Boolean=false, doGPU:Boolean=true, crosswire:Boolean=false, parallel:Boolean=true,
       corpusPath:String="/data/wsj/wsj/", 
       grammarPath:String="grammar/eng_sm6.gr", 
       symbolsPath:String="grammar/") = {
     
-  	val corpus: Corpus = new Corpus(corpusPath, TreeBankType.WSJ, 1.0, true)
+    val corpus: Corpus = new Corpus(corpusPath, TreeBankType.WSJ, 1.0, true)
     val testTrees = corpus.getDevTestingTrees
 
     val eval = new EnglishPennTreebankParseEvaluator.LabeledConstituentEval[String](new util.HashSet[String](util.Arrays.asList("ROOT","PSEUDO")),
@@ -693,102 +695,112 @@ object BIDParser {
     	System.out.println("Failed to load grammar from file"+grammarPath+".")
     	System.exit(1)
     }
-	  val grammar = pData.getGrammar
-	  grammar.splitRules()
-	  val lexicon = pData.getLexicon
-	  val spanPredictor = pData.getSpanPredictor
-	  Numberer.setNumberers(pData.getNumbs)
+    val grammar = pData.getGrammar
+    grammar.splitRules()
+    val lexicon = pData.getLexicon
+    val spanPredictor = pData.getSpanPredictor
+    Numberer.setNumberers(pData.getNumbs)
 
 
-	  val vitParse = true
-	  val cdict:CSMat = load(symbolsPath+"dmodel.mat", "allmap")
-	  val sdict = cdict.data
+    val vitParse = true
+    val cdict:CSMat = load(symbolsPath+"dmodel.mat", "allmap")
+    val sdict = cdict.data
 
-	  val substateIds = Array.ofDim[Array[Int]](grammar.numStates)
-	  val ssmap = CSMat(cdict.length,1)
-	  var id = 0
-	  for(i <- 0 until grammar.numSubStates.length) {
-	  	substateIds(i) = new Array[Int](grammar.numSubStates(i))
-	  	for(j <- 0 until grammar.numSubStates(i)) {
-	  		val sym = grammar.getTagNumberer.`object`(i) + "_" + j
-	  		val ix = sdict.indexOf(sym)
-	  		substateIds(i)(j) = ix
-	  		ssmap(ix) = grammar.getTagNumberer.`object`(i).toString
-	  		id += 1
-	  	}
-	  }
-	  
-	  val nnsyms = sdict.indexOf("EX_1")+1
-	  val rootpos = sdict.indexOf("ROOT_0")
-	  // Overlap by three symbols, since ROOT_0, EX_0 and EX_1 are both terminal and non-terminal 
-	  val ntsyms = sdict.length - nnsyms + 3
-	  val (ffrac, gmem, gtmem) = GPUmem
-	  val maxnodes = (32 * (gmem/12/nnsyms/32)).toInt
-	  val maxwords = 32 * (maxnodes/10/32)
-	  val maxtrees = maxwords/8
-	  val stride = 8192
-	  val nthreads = 1024
+    val substateIds = Array.ofDim[Array[Int]](grammar.numStates)
+    val ssmap = CSMat(cdict.length,1)
+    var id = 0
+    for(i <- 0 until grammar.numSubStates.length) {
+      substateIds(i) = new Array[Int](grammar.numSubStates(i))
+      for(j <- 0 until grammar.numSubStates(i)) {
+	val sym = grammar.getTagNumberer.`object`(i) + "_" + j
+	val ix = sdict.indexOf(sym)
+	substateIds(i)(j) = ix
+	ssmap(ix) = grammar.getTagNumberer.`object`(i).toString
+	id += 1
+      }
+    }
+    
+    val nnsyms = sdict.indexOf("EX_1")+1
+    val rootpos = sdict.indexOf("ROOT_0")
+    // Overlap by three symbols, since ROOT_0, EX_0 and EX_1 are both terminal and non-terminal 
+    val ntsyms = sdict.length - nnsyms + 3
+    val (ffrac, gmem, gtmem) = GPUmem
+    val maxnodes = (32 * (gmem/12/nnsyms/32)).toInt
+    val maxwords = 32 * (maxnodes/10/32)
+    val maxtrees = maxwords/8
+    val stride = 8192
+    val nthreads = 1024
+    val parser =  new CoarseToFineMaxRuleParser(grammar, lexicon, 1.0, -1, true, false, false, false, false, false, false);
 
-	  var ts:TreeStore = new TreeStore(nnsyms, ntsyms, maxwords, maxnodes, maxtrees, maxlen, stride, nthreads, cdict, docheck, doGPU, crosswire)
-	  ts.clearState
-	  ts.loadrules(symbolsPath, nnsyms, ntsyms)
-	  ts.createKstates
-	  val (ffrac2, gmem2, gtmem2) = GPUmem
-	  println("frac=%g, abs=%d" format (ffrac2, gmem2))
-
-	  val testTreesIterator = testTrees.iterator()
-	  val outTrees = new ArrayBuffer[Tree[String]]()
-	  val currentTrees = new ArrayBuffer[Tree[String]]()
-	  var nwords = 0
-	  var nsentences = 0
-	  var nnodes = 0
-	  var done = false
-	  
-	  ts.grammar = grammar
-	  ts.parser = new CoarseToFineMaxRuleParser(grammar, lexicon, 1.0, -1, true, false, false, false, false, false, false);
-	  ts.ssmap = ssmap
-	  val tsents = new Array[CSMat](testTrees.size)
-  //parser.binarization = pData.getBinarization	  
-	  while(testTreesIterator.hasNext && !done) {
-	  	val testTree = testTreesIterator.next()
-	  	val testSentence = testTree.getYield
-	  	val len = testSentence.size
-	  	if (len <= maxlen) {
-	  		if (nwords + len > maxwords || nnodes + len*(len+1)/2 > maxnodes || nsentences >= maxsents) {
-	  		  done = true
-	  		} else {
-	  		  val ctmp = CSMat(testSentence.size,1)
-	  			tsents(nsentences) = ctmp
-	  			var tsiter = testSentence.iterator
-	  			for (i <- 0 until testSentence.size)  {ctmp(i) = tsiter.next}
-	  			// pos -> coarse Sym -> refinement -> score
-	  			val scores: mutable.Buffer[Array[Array[Double]]] = ts.parser.getTagScores(testSentence).asScala
-	  			val ssc = FMat(ntsyms, scores.length)
-	  			for ( (score,pos) <- scores.zipWithIndex) {
-	  				for(i <- 0 until score.length if score(i) != null; j <- 0 until score(i).length) {
-	  					ssc(substateIds(i)(j)-nnsyms+3, pos) = score(i)(j).toFloat
-	  				}
-	  			} 
-	  		  ts.addtree(ssc)
-	  		  currentTrees += testTree
-	  		  nsentences += 1
-	  		  nwords += len
-	  		  nnodes += len*(len+1)/2
-	  		}
-	  	}
-	  }
-	  flip
-//	  try {
-	  	ts.innerscores
-	  	ts.viterbi(rootpos)
-//	  } catch {
-//	    case e:Exception => println("\nException thrown, exiting "+e.toString)
-//	  }
-	  val ff = gflop
-	  val tt = ff._2
-	  println("maxlen=%d, nsentences=%d, nwords=%d, nnodes=%d, maxsents=%d, maxwords=%d, maxnodes=%d\ntime= %f secs, %f sents/sec, %f gflops" format 
-	  		(maxlen, nsentences, nwords, nnodes, maxtrees, maxwords, maxnodes, tt, nsentences/tt, ff._1))
- 	  (ts, testTrees, tsents)
+    val tsents = new Array[CSMat](testTrees.size)
+    val slist = ListBuffer[FMat]()
+    //parser.binarization = pData.getBinarization	  
+    val testTreesIterator = testTrees.iterator()
+    var nwords = 0
+    var nsentences = 0
+    var nnodes = 0
+    var done = false
+    while(testTreesIterator.hasNext && !done) {
+      val testTree = testTreesIterator.next()
+      val testSentence = testTree.getYield
+      val len = testSentence.size
+      if (len <= maxlen) {
+	if (nwords + len > maxwords || nnodes + len*(len+1)/2 > maxnodes || nsentences >= maxsents) {
+	  done = true
+	} else {
+	  val ctmp = CSMat(testSentence.size,1)
+	  tsents(nsentences) = ctmp
+	  var tsiter = testSentence.iterator
+	  for (i <- 0 until testSentence.size)  {ctmp(i) = tsiter.next}
+	  // pos -> coarse Sym -> refinement -> score
+	  val scores: mutable.Buffer[Array[Array[Double]]] = parser.getTagScores(testSentence).asScala
+	  val ssc = FMat(ntsyms, scores.length)
+	  for ( (score,pos) <- scores.zipWithIndex) {
+	    for(i <- 0 until score.length if score(i) != null; j <- 0 until score(i).length) {
+	      ssc(substateIds(i)(j)-nnsyms+3, pos) = score(i)(j).toFloat
+	    }
+	  } 
+          slist += ssc
+	  nsentences += 1
+ 	  nwords += len
+	  nnodes += len*(len+1)/2
+	}
+      }
+    }
+    val nGPUthreads = if (parallel) Mat.hasCUDA else 1
+    var tss = new Array[TreeStore](nGPUthreads)
+    for (ithread <- 0 until nGPUthreads) { 
+      setGPU(ithread)
+      val ts = new TreeStore(nnsyms, ntsyms, maxwords, maxnodes, maxtrees, maxlen, stride, nthreads, cdict, docheck, doGPU, crosswire)
+      tss(ithread) = ts
+      ts.clearState
+      ts.loadrules(symbolsPath, nnsyms, ntsyms)
+      ts.createKstates
+      ts.grammar = grammar
+      ts.parser = parser
+      ts.ssmap = ssmap
+      slist.foreach(ssc => ts.addtree(ssc))
+    }
+    flip
+    var tdone = izeros(nGPUthreads,1)
+    for (ithread <- 0 until nGPUthreads) { 
+      Actor.actor { 
+        setGPU(ithread)
+        val ts = tss(ithread)
+        ts.innerscores
+        ts.viterbi(rootpos)
+        tdone(ithread) = 1
+      }
+    }
+    while (mini(tdone).v == 0) {Thread.`yield`}
+    val ff = gflop
+    val tt = ff._2
+    nsentences *= nGPUthreads
+    nwords *= nGPUthreads
+    nnodes *= nGPUthreads
+    println("maxlen=%d, nsentences=%d, nwords=%d, nnodes=%d, maxsents=%d, maxwords=%d, maxnodes=%d\ntime= %f secs, %f sents/sec, %f gflops" format 
+	    (maxlen, nsentences, nwords, nnodes, maxtrees, maxwords, maxnodes, tt, nsentences/tt, ff._1))
+    (tss, testTrees, tsents)
   }
   
   def printTree(itree:Int, ts:TreeStore, tsents:Array[CSMat]) = {
