@@ -678,7 +678,7 @@ object BIDParser {
     runParser(args(0).toInt, args(1).toInt, args(2).toBoolean, args(3).toBoolean, args(4).toBoolean, args(5).toBoolean, args(6), args(7), args(8))
   }
 
-  def runParser(maxlen:Int=30, maxsents:Int=10000, docheck:Boolean=false, doGPU:Boolean=true, crosswire:Boolean=false, parallel:Boolean=true,
+  def runParser(maxlen:Int=30, maxsents:Int=10000, docheck:Boolean=false, doGPU:Boolean=true, crosswire:Boolean=false, parallel:Boolean=false,
       corpusPath:String="/data/wsj/wsj/", 
       grammarPath:String="grammar/eng_sm6.gr", 
       symbolsPath:String="grammar/") = {
