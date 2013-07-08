@@ -174,7 +174,7 @@ class TreeStore(val nnsyms:Int, val ntsyms:Int, val maxwords:Int, val maxnodes:I
 	    if (err != 0) throw new RuntimeException("CUDA error in doblock:pcopytxout")
 	    
 	    Mat.nflops += 3L * ndo * nrules
-	    totrules += ndo * nrules
+	    totrules += 1L * ndo * nrules
 	    ndo = 0
 	  }
 	  
