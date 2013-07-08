@@ -125,6 +125,8 @@ class TreeStore(val nnsyms:Int, val ntsyms:Int, val maxwords:Int, val maxnodes:I
   var nnodes = 0
   var nwords = 0
   var maxheight = 0
+  var vitwork = 0.0
+  var totrules = 0L
   itreeptr(0) = 0  
   iwordptr(0) = 0
 	
@@ -172,6 +174,7 @@ class TreeStore(val nnsyms:Int, val ntsyms:Int, val maxwords:Int, val maxnodes:I
 	    if (err != 0) throw new RuntimeException("CUDA error in doblock:pcopytxout")
 	    
 	    Mat.nflops += 3L * ndo * nrules
+	    totrules += ndo * nrules
 	    ndo = 0
 	  }
 	  
@@ -215,6 +218,8 @@ class TreeStore(val nnsyms:Int, val ntsyms:Int, val maxwords:Int, val maxnodes:I
 	  nnodes = 0
 	  nwords = 0
 	  maxheight = 0
+	  vitwork = 0.0
+	  totrules = 0L
 	  if (nnState != null) nnState.ndo = 0
 	  if (ntState != null) ntState.ndo = 0
 	  if (tnState != null) tnState.ndo = 0
@@ -919,7 +924,7 @@ object BIDParser {
     }
     flip
     var tdone = izeros(nGPUthreads,1)
-    var vittime = 0f
+    var vittime = zeros(nGPUthreads,1)
     for (ithread <- 0 until nGPUthreads) { 
       Actor.actor { 
         setGPU(ithread)
@@ -928,18 +933,21 @@ object BIDParser {
         val (gf, tt) = gflop
         ts.viterbi(rootpos)
         val (gf2, tt2) = gflop
-        vittime += tt2-tt
+        vittime(ithread) = tt2-tt
         tdone(ithread) = 1
       }
     }
     while (mini(tdone).v == 0) {Thread.`yield`}
+    var allrules = 0L
+    for (ithread <- 0 until nGPUthreads) {allrules += tss(ithread).totrules}
     val ff = gflop
     val tt = ff._2
     nsentences *= nGPUthreads
     nwords *= nGPUthreads
     nnodes *= nGPUthreads
-    println("maxlen=%d, nsentences=%d, nwords=%d, nnodes=%d, maxsents=%d, maxwords=%d, maxnodes=%d\ntime= %f secs, %f sents/sec, %f gflops\nvittime= %f" format 
-	    (maxlen, nsentences, nwords, nnodes, maxtrees, maxwords, maxnodes, tt, nsentences/tt, ff._1, vittime))
+    println("maxlen=%d, nsentences=%d, nwords=%d, nnodes=%d, maxsents=%d, maxwords=%d, maxnodes=%d\ntime= %f secs, %f sents/sec, %f Brules/sec, %f gflops," +
+        " vittime= %f" format 
+	    (maxlen, nsentences, nwords, nnodes, maxtrees, maxwords, maxnodes, tt, nsentences/tt, allrules/tt/1e9, ff._1, mean(vittime).dv))
     (tss, testTrees, tsents)
   }
   
