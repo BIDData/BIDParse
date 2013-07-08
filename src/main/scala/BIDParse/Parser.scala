@@ -919,12 +919,16 @@ object BIDParser {
     }
     flip
     var tdone = izeros(nGPUthreads,1)
+    var vittime = 0f
     for (ithread <- 0 until nGPUthreads) { 
       Actor.actor { 
         setGPU(ithread)
         val ts = tss(ithread)
         ts.innerscores
+        val (gf, tt) = gflop
         ts.viterbi(rootpos)
+        val (gf2, tt2) = gflop
+        vittime += tt2-tt
         tdone(ithread) = 1
       }
     }
@@ -934,8 +938,8 @@ object BIDParser {
     nsentences *= nGPUthreads
     nwords *= nGPUthreads
     nnodes *= nGPUthreads
-    println("maxlen=%d, nsentences=%d, nwords=%d, nnodes=%d, maxsents=%d, maxwords=%d, maxnodes=%d\ntime= %f secs, %f sents/sec, %f gflops" format 
-	    (maxlen, nsentences, nwords, nnodes, maxtrees, maxwords, maxnodes, tt, nsentences/tt, ff._1))
+    println("maxlen=%d, nsentences=%d, nwords=%d, nnodes=%d, maxsents=%d, maxwords=%d, maxnodes=%d\ntime= %f secs, %f sents/sec, %f gflops\nvittime= %f" format 
+	    (maxlen, nsentences, nwords, nnodes, maxtrees, maxwords, maxnodes, tt, nsentences/tt, ff._1, vittime))
     (tss, testTrees, tsents)
   }
   
