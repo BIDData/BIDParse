@@ -825,6 +825,51 @@ object BIDParser {
       symbolsPath:String="grammar/") = {
     
     val corpus: Corpus = new Corpus(corpusPath, TreeBankType.WSJ, 1.0, true)
+    // TODO: maxlen is usually computed without punctuation.
+    val testTrees = corpus.getDevTestingTrees.asScala.filter(_.getTerminalYield.size <= maxlen).asJava
+
+    val eval = new EnglishPennTreebankParseEvaluator.LabeledConstituentEval[String](new util.HashSet[String](util.Arrays.asList("ROOT","PSEUDO")),
+        new util.HashSet(util.Arrays.asList("''", "``", ".", ":", ",")))
+    System.out.println("The computed F1,LP,LR scores are just a rough guide. They are typically 0.1-0.2 lower than the official EVALB scores.")
+
+    val parser = loadParser(grammarPath, symbolsPath, docheck, doGPU, crosswire)
+    val toDecode = testTrees.asScala.map(_.getTerminalYield.asScala.toIndexedSeq).toIndexedSeq.take(maxsents)
+    flip
+    val decoded = parser.parse(toDecode)
+    val ff = gflop
+    val tt = ff._2
+    val f1 = eval.evaluateMultiple(decoded.asJava, testTrees, new PrintWriter(System.out))
+    println("time= %f secs, %f sents/sec, %f gflops f1= %f".format(tt, testTrees.size / tt, ff._1, f1) )
+
+    println("getting berkeley parser parses... this will take a while.")
+    val berkeleyParses = parser.berkeleyParses(toDecode)
+    val berkeleyf1 = eval.evaluateMultiple(berkeleyParses.map(_._1).asJava, testTrees, new PrintWriter(System.out))
+    println("Berkeley F1: " + berkeleyf1)
+
+    (decoded, testTrees.asScala.toIndexedSeq, berkeleyParses)
+  }
+
+
+  def loadParser(grammarPath: String="grammar/eng6_sm6.gr", symbolsPath: String="grammar/", docheck: Boolean = false, doGPU: Boolean = true, crosswire: Boolean = false) = {
+    val pData = ParserData.Load(grammarPath)
+    if (pData == null) {
+      throw new RuntimeException("Failed to load grammar from file " + grammarPath + ".")
+    }
+    val grammar = pData.getGrammar
+    grammar.splitRules()
+    val lexicon = pData.getLexicon
+    Numberer.setNumberers(pData.getNumbs)
+
+    new BIDParser(grammar, lexicon, pData.getBinarization, symbolsPath, docheck = docheck, doGPU = doGPU, crosswire = crosswire)
+  }
+
+
+  def runParser_old(maxlen:Int=30, maxsents:Int=10000, docheck:Boolean=false, doGPU:Boolean=true, crosswire:Boolean=false, parallel:Boolean=false,
+      corpusPath:String="/data/wsj/wsj/", 
+      grammarPath:String="grammar/eng_sm6.gr", 
+      symbolsPath:String="grammar/") = {
+    
+    val corpus: Corpus = new Corpus(corpusPath, TreeBankType.WSJ, 1.0, true)
     val testTrees = corpus.getDevTestingTrees
 
     val eval = new EnglishPennTreebankParseEvaluator.LabeledConstituentEval[String](new util.HashSet[String](util.Arrays.asList("ROOT","PSEUDO")),
