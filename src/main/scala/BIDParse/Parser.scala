@@ -860,7 +860,7 @@ object BIDParser {
     val lexicon = pData.getLexicon
     Numberer.setNumberers(pData.getNumbs)
 
-    new BIDParser(grammar, lexicon, pData.getBinarization, symbolsPath, docheck = docheck, doGPU = doGPU, crosswire = crosswire)
+    new BIDParser(docheck = docheck, doGPU = doGPU, crosswire = crosswire)
   }
 
 
