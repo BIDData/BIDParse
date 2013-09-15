@@ -19,11 +19,10 @@ import edu.berkeley.nlp.PCFGLA.Corpus.TreeBankType
 import edu.berkeley.nlp.parser.EnglishPennTreebankParseEvaluator
 import edu.berkeley.nlp.io.{PTBLineLexer, PTBTokenizer}
 import edu.berkeley.nlp.util.Numberer
-import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 import collection.mutable
 import collection.mutable.ArrayBuffer
-import scala.actors.Actor
+import scala.collection.JavaConverters._
 import scala.actors.Actor
 import io.Source
 import java.util
@@ -814,6 +813,36 @@ class BIDParser(maxlen: Int = 40,
     result
   }
 }
+
+
+object ParseText {
+  import BIDParser._
+  def main(args: Array[String]) {
+    val parser = loadParser(args(0), args(1))
+
+    val fin = if(args.length < 3) System.in else new FileInputStream(args(2))
+    // TODO: currently slurps whole file
+
+    val source = Source.fromInputStream(fin).mkString
+    import java.text.BreakIterator
+    val break = BreakIterator.getSentenceInstance()
+    break.setText(source)
+    var start = break.first()
+    var end = break.next()
+    val sentences = new ArrayBuffer[IndexedSeq[String]]()
+    while(end != BreakIterator.DONE) {
+      val sent = source.substring(start, end).trim.split("\n\n").map(_.replaceAll("\\s"," ").trim).filter(_.nonEmpty).toIndexedSeq
+      sentences ++= sent.map(s => new PTBLineLexer().tokenizeLine(s).asScala.toIndexedSeq)
+      start = end
+      end = break.next
+    }
+
+    parser.parse(sentences) foreach println
+  }
+
+
+}
+
 
 object BIDParser {
    
