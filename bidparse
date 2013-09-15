@@ -16,9 +16,9 @@ JCUDA_LIBDIR="${BIDMAT_ROOT}/lib"
 BIDLIB="${BIDMAT_ROOT}/lib"
 LIBDIR=${BIDPARSE_ROOT}/lib
 if [ `uname` = "Darwin" ]; then
-  export DYLD_LIBRARY_PATH="${BIDMAT_ROOT}/lib/osx64:${BIDPARSE_ROOT}/lib/osx64:${BIDMAT_ROOT}/lib/osx64/JCUDA5.0:/usr/local/cuda/lib:${LD_LIBRARY_PATH}" 
+  export DYLD_LIBRARY_PATH="${BIDMAT_ROOT}/lib:/usr/local/cuda/lib:${LD_LIBRARY_PATH}" 
 else
-  export LD_LIBRARY_PATH="${BIDMAT_ROOT}/lib/linux64:${BIDPARSE_ROOT}/lib/linux64:${BIDMAT_ROOT}/lib/linux64/JCUDA5.0:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}" 
+  export LD_LIBRARY_PATH="${BIDMAT_ROOT}/lib:/usr/local/cuda/lib64:${LD_LIBRARY_PATH}" 
 fi
 
 BIDMAT_LIBS="${BIDMAT_ROOT}/BIDMat.jar;${BIDLIB}/ptplot.jar;${BIDLIB}/ptplotapplication.jar;${BIDLIB}/jhdf5.jar;${BIDLIB}/commons-math3-3.1.1.jar"

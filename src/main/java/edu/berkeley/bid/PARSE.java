@@ -7,7 +7,7 @@ public final class PARSE {
     private PARSE() {}
 
     static {
-        System.loadLibrary("jniparse");
+    	jcuda.LibUtils.loadLibrary("jniparse");
     }
 
     public static native int nnrules(Pointer P, Pointer L, Pointer R, Pointer scale, int ndo, int nthreads);
