@@ -757,8 +757,8 @@ class BIDParser(maxlen: Int = 40,
      ts.viterbi(rootpos)
     val trees = for(i <- 0 until numSentences) yield {
       var tree = BIDParser.getRTree(i, ts, tsents, true)
-      //tree = new Trees.FunctionNodeStripper().transformTree(tree)
-      //tree = TreeAnnotations.unAnnotateTree(tree)
+      tree = new Trees.FunctionNodeStripper().transformTree(tree)
+      tree = TreeAnnotations.unAnnotateTree(tree)
       tree
     }
     trees
