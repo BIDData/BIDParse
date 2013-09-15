@@ -30,4 +30,6 @@ if [ ! "$OS" = "Windows_NT" ]; then
     export ALL_LIBS=`echo "${ALL_LIBS}" | sed 's/;/:/g'`
 fi
 
+cd ${BIDPARSE_ROOT}
+
 scala -nobootcp -cp "${ALL_LIBS}" -Yrepl-sync -i ${LIBDIR}/bidparse_init.scala
