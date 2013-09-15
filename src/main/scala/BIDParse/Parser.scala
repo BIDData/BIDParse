@@ -16,15 +16,17 @@ import edu.berkeley.nlp.syntax.Tree
 import edu.berkeley.nlp.syntax.Trees
 import edu.berkeley.nlp.PCFGLA._
 import edu.berkeley.nlp.PCFGLA.Corpus.TreeBankType
-import scala.collection.JavaConverters._
 import edu.berkeley.nlp.parser.EnglishPennTreebankParseEvaluator
-import java.util
+import edu.berkeley.nlp.io.{PTBLineLexer, PTBTokenizer}
 import edu.berkeley.nlp.util.Numberer
-import scala.actors.Actor
+import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 import collection.mutable
 import collection.mutable.ArrayBuffer
+import scala.actors.Actor
+import scala.actors.Actor
 import io.Source
+import java.util
 import java.io._
 
 
