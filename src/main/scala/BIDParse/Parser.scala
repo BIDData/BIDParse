@@ -755,9 +755,13 @@ class BIDParser(maxlen: Int = 40,
     ts.innerscores
      ts.viterbi(rootpos)
     val trees = for(i <- 0 until numSentences) yield {
-      var tree = BIDParser.getRTree(i, ts, tsents, true)
- //     tree = new Trees.FunctionNodeStripper().transformTree(tree)
- //     tree = TreeAnnotations.unAnnotateTree(tree)
+      var tree = if (doGPU) {
+      	BIDParser.getTree(i, ts, tsents, true)
+      }	else {
+      	BIDParser.getRTree(i, ts, tsents, true)
+      } 
+      tree = new Trees.FunctionNodeStripper().transformTree(tree)
+      tree = TreeAnnotations.unAnnotateTree(tree)
       tree
     }
     trees
@@ -870,7 +874,8 @@ object BIDParser {
     val ff = gflop
     val tt = ff._2
     val f1 = eval.evaluateMultiple(decoded.asJava, testTrees, new PrintWriter(System.out))
-    println("time= %f secs, %f sents/sec, %f gflops f1= %f".format(tt, testTrees.size / tt, ff._1, f1) )
+    println("time= %f secs, %f sents/sec, %f gflops".format(tt, testTrees.size / tt, ff._1) )
+    println("GPU parsesr F1: " + f1)
 
     println("getting berkeley parser parses... this will take a while.")
     val berkeleyParses = parser.berkeleyParses(toDecode)
@@ -1093,6 +1098,16 @@ object BIDParser {
     val sw = new StringWriter()
     val pw = new PrintWriter(sw)
     printRTree(pw, i, ts, tsents, binary)
+    pw.close()
+    val t = Trees.PennTreeReader.parseEasy(sw.toString)
+    assert(t ne null, sw.toString)
+    t
+  }
+  
+  def getTree(i: Int, ts: TreeStore, tsents: Array[CSMat], binary: Boolean = true):Tree[String] = {
+    val sw = new StringWriter()
+    val pw = new PrintWriter(sw)
+    printTree(pw, i, ts, tsents, binary)
     pw.close()
     val t = Trees.PennTreeReader.parseEasy(sw.toString)
     assert(t ne null, sw.toString)
