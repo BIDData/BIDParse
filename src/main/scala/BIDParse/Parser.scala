@@ -738,6 +738,7 @@ class BIDParser(maxlen: Int = 40,
   private val maxtrees = maxwords/8
   private val stride = 8192
   private val nthreads = 1024
+  private var ts:TreeStore = null
 
   def parse(sentences: IndexedSeq[IndexedSeq[String]]) = {
     getBatches(sentences).map(createBatch _).map(parseBatch _).foldLeft(IndexedSeq.empty[Tree[String]])(_ ++ _)
@@ -746,12 +747,14 @@ class BIDParser(maxlen: Int = 40,
   private def parseBatch(batch: Batch):IndexedSeq[Tree[String]] = {
     import batch._
     println("ParseBatch")
-    val ts = new TreeStore(nnsyms, ntsyms, maxwords, maxnodes, maxtrees, maxlen, stride, nthreads, cdict, docheck, doGPU, crosswire)
+    if (ts == null) {
+    	ts = new TreeStore(nnsyms, ntsyms, maxwords, maxnodes, maxtrees, maxlen, stride, nthreads, cdict, docheck, doGPU, crosswire)
+    	ts.clearState
+    	ts.loadrules(symbolsPath, nnsyms, ntsyms)
+    	ts.createKstates
+    	ts.ssmap = ssmap
+    }
     ts.clearState
-    ts.loadrules(symbolsPath, nnsyms, ntsyms)
-
-    ts.createKstates
-    ts.ssmap = ssmap
     posScores.foreach(ssc => ts.addtree(ssc))
     ts.innerscores
      ts.viterbi(rootpos)
