@@ -876,14 +876,14 @@ object BIDParser {
     val tt = ff._2
     val f1 = eval.evaluateMultiple(decoded.asJava, testTrees, new PrintWriter(System.out))
     println("time= %f secs, %f sents/sec, %f gflops".format(tt, testTrees.size / tt, ff._1) )
-    println("GPU parsesr F1: " + f1)
+    println("GPU parsesr F1: %6.5f" format f1)
 
     println("getting berkeley parser parses... this will take a while.")
     tic
     val berkeleyParses = parser.berkeleyParses(toDecode)
     val ttt=toc
     val berkeleyf1 = eval.evaluateMultiple(berkeleyParses.map(_._1).asJava, testTrees, new PrintWriter(System.out))
-    println("Berkeley F1: " + berkeleyf1 + " t="+ttt)
+    println("Berkeley F1: %6.5f, t=%4.2f" format (berkeleyf1, ttt))
 
     (decoded, testTrees.asScala.toIndexedSeq, berkeleyParses)
   }
