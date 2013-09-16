@@ -748,6 +748,7 @@ class BIDParser(maxlen: Int = 40,
     val ts = new TreeStore(nnsyms, ntsyms, maxwords, maxnodes, maxtrees, maxlen, stride, nthreads, cdict, docheck, doGPU, crosswire)
     ts.clearState
     ts.loadrules(symbolsPath, nnsyms, ntsyms)
+    println("ParseBatch")
 
     ts.createKstates
     ts.ssmap = ssmap
