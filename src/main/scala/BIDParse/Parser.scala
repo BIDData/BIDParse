@@ -761,7 +761,7 @@ class BIDParser(maxlen: Int = 40,
       	BIDParser.getRTree(i, ts, tsents, true)
       } 
       tree = new Trees.FunctionNodeStripper().transformTree(tree)
-      tree = TreeAnnotations.unAnnotateTree(tree)
+      tree = edu.berkeley.bid.PCFGLA.TreeAnnotations.unAnnotateTree(tree)
       tree
     }
     trees
