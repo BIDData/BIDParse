@@ -21,7 +21,7 @@ import edu.berkeley.nlp.io.{PTBLineLexer, PTBTokenizer}
 import edu.berkeley.nlp.util.Numberer
 import scala.collection.mutable.ListBuffer
 import collection.mutable
-import collection.mutable.ArrayBuffer
+import collection.mutable.ArrayBuffer 
 import scala.collection.JavaConverters._
 import scala.actors.Actor
 import io.Source
