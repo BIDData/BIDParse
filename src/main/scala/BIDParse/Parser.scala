@@ -745,10 +745,10 @@ class BIDParser(maxlen: Int = 40,
 
   private def parseBatch(batch: Batch):IndexedSeq[Tree[String]] = {
     import batch._
+    println("ParseBatch")
     val ts = new TreeStore(nnsyms, ntsyms, maxwords, maxnodes, maxtrees, maxlen, stride, nthreads, cdict, docheck, doGPU, crosswire)
     ts.clearState
     ts.loadrules(symbolsPath, nnsyms, ntsyms)
-    println("ParseBatch")
 
     ts.createKstates
     ts.ssmap = ssmap
@@ -862,6 +862,7 @@ object BIDParser {
     
     val corpus: Corpus = new Corpus(corpusPath, TreeBankType.WSJ, 1.0, true)
     // TODO: maxlen is usually computed without punctuation.
+//    val testTrees = corpus.getDevTestingTrees.asScala.filter(_.getTerminalYield.size <= maxlen).asJava
     val testTrees = corpus.getDevTestingTrees.asScala.filter(_.getTerminalYield.size <= maxlen).asJava
 
     val eval = new EnglishPennTreebankParseEvaluator.LabeledConstituentEval[String](new util.HashSet[String](util.Arrays.asList("ROOT","PSEUDO")),
