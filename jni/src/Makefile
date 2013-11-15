@@ -24,10 +24,10 @@ bin/%.$(OBJ) : %.cu testSparse.h
 bin/%.$(OBJ) : rules/%.cu testSparse.h
 	$(NVCC) $(NVCCFLAGS) -Xptxas -dlcm=cg -o bin/$*.$(OBJ) rules/$*.cu
 
-install: /code/bin/$(LIBFILE)
+install: ../../lib/$(LIBFILE)
 
-/code/bin/$(LIBFILE): $(LIBFILE)
-	cp $(LIBFILE) /code/bin
+../../lib/$(LIBFILE): $(LIBFILE)
+	cp $(LIBFILE) ../../lib
 
 clean:
 	rm -f *.$(OBJ) *.lib *.pdb *$(LIBAPPEND) bin/*
