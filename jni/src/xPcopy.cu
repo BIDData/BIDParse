@@ -24,14 +24,14 @@ __global__ void __pcopy_transpose_in(int *iptrs, float *in, float *out, int outs
       if (xb + threadIdx.x < nrows) {
         int ylim = min(ncols, yb + BLOCKDIM);
         for (int y = threadIdx.y + yb; y < ylim; y += blockDim.y) {
-          tile[threadIdx.x][y-iy] = in[iptrs[y]*nrows + threadIdx.x + xb];
+          tile[threadIdx.x][y-yb] = in[iptrs[y]*nrows + threadIdx.x + xb];
         }
       }
       __syncthreads();
       if (yb + threadIdx.x < ncols) {
         int xlim = min(nrows, xb + BLOCKDIM);
         for (int x = threadIdx.y + xb; x < xlim; x += blockDim.y) {
-          out[threadIdx.x + yb + x*outstride] = tile[x-ix][threadIdx.x];
+          out[threadIdx.x + yb + x*outstride] = tile[x-xb][threadIdx.x];
         }
       }
       __syncthreads();
@@ -64,15 +64,15 @@ __global__ void __pcopy_transpose_out(int *optrs, float *in, float *out, int ins
       if (yb + threadIdx.x < ncols) {
         int xlim = min(nrows, xb + BLOCKDIM);
         for (int x = threadIdx.y + xb; x < xlim; x += blockDim.y) {
-          tile[x-ix][threadIdx.x] = in[threadIdx.x + yb + x*instride];
+          tile[x-xb][threadIdx.x] = in[threadIdx.x + yb + x*instride];
         }
       }
       __syncthreads();
       if (xb + threadIdx.x < nrows) {
         int ylim = min(ncols, yb + BLOCKDIM);
         for (int y = threadIdx.y + yb; y < ylim; y += blockDim.y) {
-//          atomicAdd(&out[optrs[y]*nrows + threadIdx.x + xb], tile[threadIdx.x][y-iy]);
-          atomicMin((int *)&out[optrs[y]*nrows + threadIdx.x + xb], *(int *)(&tile[threadIdx.x][y-iy]));
+//          atomicAdd(&out[optrs[y]*nrows + threadIdx.x + xb], tile[threadIdx.x][y-yb]);
+          atomicMin((int *)&out[optrs[y]*nrows + threadIdx.x + xb], *(int *)(&tile[threadIdx.x][y-yb]));
         }
       }
       __syncthreads();
