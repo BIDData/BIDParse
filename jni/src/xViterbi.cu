@@ -12,6 +12,9 @@
 //#define SHSTORE(sname) sname[NSYMS]
           
 
+#ifdef __CUDA_ARCH__
+#if __CUDA_ARCH__ > 200
+
 __device__ void findvmax(float SHSTORE(scores), int n, float *outv, int *outi) {
   __shared__ float locv[NSYMS/BLOCKDIM];
   __shared__ int loci[NSYMS/BLOCKDIM];
@@ -61,6 +64,49 @@ __device__ void findvmax(float SHSTORE(scores), int n, float *outv, int *outi) {
     outi[0] = myi;
   }
   __syncthreads();
+}
+
+__global__ void __testvmax(float *vec, int n, float *pkvmax, int *pkimax, int nreps) {
+  __shared__ float SHSTORE(vals);
+
+  for (int i = threadIdx.x; i < n; i += blockDim.x) {
+    SHACCESS(vals, i) = vec[i];
+  }
+  __syncthreads();
+
+  for (int i = 0; i < nreps; i++) {
+    findvmax(vals, n, pkvmax, pkimax);
+  }
+}
+
+void testvmax(float *vec, float *cvec, int n, int nreps, int iter) {
+  float vmax, kvmax, *pkvmax;
+  int imax, kimax, *pkimax;
+  cudaMalloc((void**) &pkvmax, sizeof(float));
+  cudaMalloc((void**) &pkimax, sizeof(int));
+
+//  __testvmax<<<1,320>>>(vec, n, pkvmax, pkimax, nreps);
+  __testvmax<<<1,32>>>(vec, n, pkvmax, pkimax, nreps);
+
+  cudaDeviceSynchronize();
+  if (iter == 0) {
+  cudaMemcpy(&kvmax, pkvmax, sizeof(float), cudaMemcpyDeviceToHost);
+  cudaMemcpy(&kimax, pkimax, sizeof(int), cudaMemcpyDeviceToHost);
+  vmax = 0;
+  for (int i = 0; i < n; i++) {
+    if (cvec[i] > vmax) {
+      vmax = cvec[i];
+      imax = i;
+    }
+  }
+  if (imax == kimax && vmax == kvmax) {
+    printf("\nMax computed correctly\n");
+  } else {
+    printf("\nMax=%f(%i), kernel=%f(%i)\n", vmax, imax, kvmax, kimax);
+  }
+  }
+  cudaFree(pkvmax);
+  cudaFree(pkimax);
 }
 
 __device__ void findvmax2(float SHSTORE(scores), int n, float *outv, int *outi) {
@@ -130,48 +176,9 @@ __global__ void __testvmax2(float *vec, int n, float *pkvmax, int *pkimax, int n
 	__syncthreads();
 }
 
-__global__ void __testvmax(float *vec, int n, float *pkvmax, int *pkimax, int nreps) {
-  __shared__ float SHSTORE(vals);
 
-  for (int i = threadIdx.x; i < n; i += blockDim.x) {
-    SHACCESS(vals, i) = vec[i];
-  }
-  __syncthreads();
-
-  for (int i = 0; i < nreps; i++) {
-    findvmax(vals, n, pkvmax, pkimax);
-  }
-}
-
-void testvmax(float *vec, float *cvec, int n, int nreps, int iter) {
-  float vmax, kvmax, *pkvmax;
-  int imax, kimax, *pkimax;
-  cudaMalloc((void**) &pkvmax, sizeof(float));
-  cudaMalloc((void**) &pkimax, sizeof(int));
-
-//  __testvmax<<<1,320>>>(vec, n, pkvmax, pkimax, nreps);
-  __testvmax<<<1,32>>>(vec, n, pkvmax, pkimax, nreps);
-
-  cudaDeviceSynchronize();
-  if (iter == 0) {
-  cudaMemcpy(&kvmax, pkvmax, sizeof(float), cudaMemcpyDeviceToHost);
-  cudaMemcpy(&kimax, pkimax, sizeof(int), cudaMemcpyDeviceToHost);
-  vmax = 0;
-  for (int i = 0; i < n; i++) {
-    if (cvec[i] > vmax) {
-      vmax = cvec[i];
-      imax = i;
-    }
-  }
-  if (imax == kimax && vmax == kvmax) {
-    printf("\nMax computed correctly\n");
-  } else {
-    printf("\nMax=%f(%i), kernel=%f(%i)\n", vmax, imax, kvmax, kimax);
-  }
-  }
-  cudaFree(pkvmax);
-  cudaFree(pkimax);
-}
+#endif
+#endif
 
 #define NVITTHREADS 128
 #define MINVAL -1.0e8f

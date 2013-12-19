@@ -1,11 +1,11 @@
 CC=icc
 GCC=g++
 NVCC=nvcc
-NVCCFLAGS=-c -I/home/jfc/code/BIDParse/jni/src -I/home/jfc/code/BIDParse/jni/src/rules -use_fast_math -gencode arch=compute_30,code=sm_30           --machine 64  -Xptxas -v -Xcompiler "-fPIC -c -O2 -g -DNDEBUG"
+NVCCFLAGS=-c -I/big/code/BIDParse/jni/src -I/big/code/BIDParse/jni/src/rules -use_fast_math  -gencode arch=compute_20,code=sm_20 -gencode arch=compute_30,code=sm_30           --machine 64  -Xptxas -v -Xcompiler "-fPIC -c -O2 -g -DNDEBUG"
 SUBLIB=linux64
 OBJ=o
 OUTFLG=-o 
-CPPFLAGS=-fPIC -c -O2 -DNDEBUG  -I/usr/java/default/include -I/usr/java/default/include/linux                   -I/home/jfc/code/BIDParse/jni/src/../../../JCUDA5/CommonJNI/src -I/usr/local/cuda/include  -I/home/jfc/code/BIDParse/jni/src -I/home/jfc/code/BIDParse/jni/src/rules
+CPPFLAGS=-fPIC -c -O2 -DNDEBUG  -I/usr/java/default/include -I/usr/java/default/include/linux                   -I/big/code/BIDParse/jni/src/../../../JCUDA5/CommonJNI/src -I/usr/local/cuda/include  -I/big/code/BIDParse/jni/src -I/big/code/BIDParse/jni/src/rules
 CFLAGS=-fPIC -c -O2 -openmp -std c99 -DNDEBUG -I/usr/java/default/include -I/usr/java/default/include/linux                   -I/opt/intel/mkl/include -I/opt/intel/mkl/include/intel64/lp64
 LB=ar rc
 LD=icc -shared -static-intel
@@ -15,10 +15,10 @@ LIBPREPEND=lib
 LIBAPPEND=.so
 LAPACK_INCLUDES=
 MKL_LIBS=-L/usr/java/default/lib -L/opt/intel/composerxe/lib/intel64             /opt/intel/mkl/lib/intel64/libmkl_intel_lp64.a -Wl,--start-group              /opt/intel/mkl/lib/intel64/libmkl_intel_thread.a /opt/intel/mkl/lib/intel64/libmkl_core.a             -Wl,--end-group -liomp5 -lpthread -lm
-CUDA_LIBS=-L/usr/local/cuda/lib64 -L/home/jfc/code/BIDParse/jni/src/../../../JCUDA5/lib -lcudart -lCommonJNI
+CUDA_LIBS=-L/usr/local/cuda/lib64 -L/big/code/BIDParse/jni/src/../../../JCUDA5/lib -lcudart -lCommonJNI
 FORTRAN_LIBS=-lgfortran
 FC=gfortran
 FFLAGS=-fPIC -c -O2 -openmp -std c99 -DNDEBUG -I/usr/java/default/include -I/usr/java/default/include/linux                   -I/opt/intel/mkl/include -I/opt/intel/mkl/include/intel64/lp64
 LIB=
 INCLUDE=
-JCUDA_COMMON=/home/jfc/code/BIDParse/jni/src/../../../JCUDA5/CommonJNI/src
+JCUDA_COMMON=/big/code/BIDParse/jni/src/../../../JCUDA5/CommonJNI/src
